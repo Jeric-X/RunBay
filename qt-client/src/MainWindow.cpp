@@ -183,6 +183,12 @@ void appendAnsiText(QPlainTextEdit *edit, const QString &text, QTextCharFormat *
             }
         }
 
+        if (ch == QLatin1Char('\r') && i + 1 < text.size() && text.at(i + 1) == QLatin1Char('\n')) {
+            plain.append(QLatin1Char('\n'));
+            i += 2;
+            continue;
+        }
+
         if (ch == QLatin1Char('\r')) {
             flushPlainText();
             cursor.movePosition(QTextCursor::End);
@@ -198,33 +204,27 @@ void appendAnsiText(QPlainTextEdit *edit, const QString &text, QTextCharFormat *
     flushPlainText();
 }
 
-bool startsWithLines(const QStringList &lines, const QStringList &prefix) {
-    if (prefix.size() > lines.size()) {
-        return false;
-    }
-    for (int i = 0; i < prefix.size(); ++i) {
-        if (lines.at(i) != prefix.at(i)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-QString terminalTextForLines(const QStringList &newLines, bool resetLog, const QStringList &previousLines, bool hasVisibleLog) {
+QString terminalTextForEntries(const QList<LogEntry> &entries, bool hasVisibleLog) {
     QString text;
-    bool hasRenderedLine = hasVisibleLog && !resetLog && !previousLines.isEmpty();
-    bool previousWasProgress = hasRenderedLine && previousLines.last().startsWith(QLatin1Char('\r'));
+    bool hasRenderedText = hasVisibleLog;
+    bool previousEndedAtLineBoundary = !hasVisibleLog;
 
-    for (const QString &line : newLines) {
-        const bool isProgress = line.startsWith(QLatin1Char('\r'));
-        if (!text.isEmpty() || hasRenderedLine) {
-            if (!isProgress || !previousWasProgress) {
+    for (const LogEntry &entry : entries) {
+        const QString &entryText = entry.text;
+        if (entryText.isEmpty()) {
+            continue;
+        }
+        const bool startsAtLineBoundary = entryText.startsWith(QLatin1Char('\r')) || entryText.startsWith(QLatin1Char('\n'));
+        if (hasRenderedText && !previousEndedAtLineBoundary && !startsAtLineBoundary) {
+            if (!text.isEmpty()) {
+                text.append(QLatin1Char('\n'));
+            } else if (hasVisibleLog) {
                 text.append(QLatin1Char('\n'));
             }
         }
-        text.append(line);
-        hasRenderedLine = true;
-        previousWasProgress = isProgress;
+        text.append(entryText);
+        hasRenderedText = true;
+        previousEndedAtLineBoundary = entryText.endsWith(QLatin1Char('\n')) || entryText.endsWith(QLatin1Char('\r'));
     }
     return text;
 }
@@ -283,7 +283,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         const QString id = selectedTaskId();
         if (!id.isEmpty()) {
-            m_api.fetchLogs(id);
+            m_api.fetchLogs(id, id == m_loadedLogTaskId ? m_lastLogEntryId : 0);
         }
     });
 
@@ -769,14 +769,14 @@ void MainWindow::onSelectionChanged() {
     if (!id.isEmpty()) {
         if (id != m_loadedLogTaskId) {
             m_loadedLogTaskId = id;
-            m_loadedLogLines.clear();
+            m_lastLogEntryId = 0;
             m_logFormat = QTextCharFormat();
             m_logView->clear();
         }
         m_api.fetchLogs(id);
     } else {
         m_loadedLogTaskId.clear();
-        m_loadedLogLines.clear();
+        m_lastLogEntryId = 0;
         m_logFormat = QTextCharFormat();
         m_logView->clear();
         m_detailLabel->setText(QStringLiteral("No task selected"));
@@ -831,14 +831,20 @@ void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
     updateActions();
 }
 
-void MainWindow::onLogsLoaded(const QString &taskId, const QStringList &lines) {
+void MainWindow::onLogsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated) {
     if (taskId != selectedTaskId()) {
         return;
     }
 
-    const bool resetLog = taskId != m_loadedLogTaskId || !startsWithLines(lines, m_loadedLogLines);
-    const QStringList newLines = resetLog ? lines : lines.mid(m_loadedLogLines.size());
-    if (newLines.isEmpty() && !resetLog) {
+    const bool resetLog = taskId != m_loadedLogTaskId || truncated;
+    QList<LogEntry> newEntries;
+    for (const LogEntry &entry : entries) {
+        if (resetLog || entry.id > m_lastLogEntryId) {
+            newEntries.append(entry);
+        }
+    }
+    if (newEntries.isEmpty() && !resetLog) {
+        m_lastLogEntryId = qMax(m_lastLogEntryId, endId);
         return;
     }
 
@@ -850,14 +856,20 @@ void MainWindow::onLogsLoaded(const QString &taskId, const QStringList &lines) {
     if (resetLog) {
         m_logView->clear();
         m_logFormat = QTextCharFormat();
+        if (truncated && startId > 0) {
+            appendAnsiText(m_logView, QStringLiteral("--- log history truncated ---\n"), &m_logFormat);
+        }
     }
 
-    const bool hasVisibleLog = !m_logView->document()->isEmpty();
-    QString text = terminalTextForLines(newLines, resetLog, m_loadedLogLines, hasVisibleLog);
+    const bool hasVisibleLog = !resetLog && !m_logView->document()->isEmpty();
+    QString text = terminalTextForEntries(newEntries, hasVisibleLog);
     appendAnsiText(m_logView, text, &m_logFormat);
 
     m_loadedLogTaskId = taskId;
-    m_loadedLogLines = lines;
+    for (const LogEntry &entry : newEntries) {
+        m_lastLogEntryId = qMax(m_lastLogEntryId, entry.id);
+    }
+    m_lastLogEntryId = qMax(m_lastLogEntryId, endId);
 
     if (hadSelection && !resetLog) {
         m_logView->setTextCursor(savedCursor);

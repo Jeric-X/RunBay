@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QVariant>
 
 ApiClient::ApiClient(QObject *parent)
     : QObject(parent), m_baseUrl(QStringLiteral("http://127.0.0.1:8732")) {}
@@ -100,8 +101,11 @@ void ApiClient::deleteTask(const QString &id) {
     });
 }
 
-void ApiClient::fetchLogs(const QString &id, int tail) {
-    QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/tasks/%1/logs?tail=%2").arg(id).arg(tail)));
+void ApiClient::fetchLogs(const QString &id, quint64 after, int tail) {
+    const QString query = after > 0
+                              ? QStringLiteral("after=%1").arg(after)
+                              : QStringLiteral("tail=%1").arg(tail);
+    QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/tasks/%1/logs?%2").arg(id, query)));
     connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
         const QByteArray body = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
@@ -110,13 +114,20 @@ void ApiClient::fetchLogs(const QString &id, int tail) {
             return;
         }
 
-        QStringList lines;
+        QList<LogEntry> entries;
         const QJsonObject object = QJsonDocument::fromJson(body).object();
-        for (const QJsonValue &value : object.value(QStringLiteral("lines")).toArray()) {
-            lines.append(value.toString());
+        for (const QJsonValue &value : object.value(QStringLiteral("entries")).toArray()) {
+            const QJsonObject entryObject = value.toObject();
+            LogEntry entry;
+            entry.id = entryObject.value(QStringLiteral("id")).toVariant().toULongLong();
+            entry.text = entryObject.value(QStringLiteral("text")).toString();
+            entries.append(entry);
         }
+        const quint64 startId = object.value(QStringLiteral("start_id")).toVariant().toULongLong();
+        const quint64 endId = object.value(QStringLiteral("end_id")).toVariant().toULongLong();
+        const bool truncated = object.value(QStringLiteral("truncated")).toBool();
         reply->deleteLater();
-        emit logsLoaded(id, lines);
+        emit logsLoaded(id, entries, startId, endId, truncated);
     });
 }
 

@@ -19,7 +19,8 @@ var ErrNotFound = errors.New("task not found")
 type MemoryStore struct {
 	mu       sync.RWMutex
 	tasks    map[string]*task.Task
-	logs     map[string][]string
+	logs     map[string][]task.LogEntry
+	nextLog  map[string]uint64
 	dataPath string
 	logSink  LogSink
 }
@@ -39,7 +40,8 @@ func NewMemoryStoreWithPath(dataPath string) *MemoryStore {
 func NewMemoryStoreWithPathAndLogSink(dataPath string, logSink LogSink) *MemoryStore {
 	store := &MemoryStore{
 		tasks:   make(map[string]*task.Task),
-		logs:    make(map[string][]string),
+		logs:    make(map[string][]task.LogEntry),
+		nextLog: make(map[string]uint64),
 		logSink: logSink,
 	}
 	if dataPath != "" {
@@ -68,7 +70,7 @@ func (s *MemoryStore) Create(req task.CreateRequest) (*task.Task, error) {
 
 	s.mu.Lock()
 	s.tasks[t.ID] = cloneTask(t)
-	s.logs[t.ID] = []string{createdLine}
+	s.logs[t.ID] = []task.LogEntry{s.newLogEntryLocked(t.ID, createdLine)}
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -128,6 +130,7 @@ func (s *MemoryStore) Delete(id string) error {
 	}
 	delete(s.tasks, id)
 	delete(s.logs, id)
+	delete(s.nextLog, id)
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
@@ -137,9 +140,9 @@ func (s *MemoryStore) Delete(id string) error {
 func (s *MemoryStore) AppendLog(id, line string) {
 	s.mu.Lock()
 	const maxLines = 5000
-	s.logs[id] = append(s.logs[id], line)
+	s.logs[id] = append(s.logs[id], s.newLogEntryLocked(id, line))
 	if len(s.logs[id]) > maxLines {
-		s.logs[id] = append([]string(nil), s.logs[id][len(s.logs[id])-maxLines:]...)
+		s.logs[id] = append([]task.LogEntry(nil), s.logs[id][len(s.logs[id])-maxLines:]...)
 	}
 	logSink := s.logSink
 	s.mu.Unlock()
@@ -149,18 +152,45 @@ func (s *MemoryStore) AppendLog(id, line string) {
 	}
 }
 
-func (s *MemoryStore) TailLogs(id string, tail int) ([]string, error) {
+func (s *MemoryStore) TailLogs(id string, tail int, after uint64) (*task.LogResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	lines, ok := s.logs[id]
+	entries, ok := s.logs[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if tail <= 0 || tail > len(lines) {
-		tail = len(lines)
+
+	start := 0
+	truncated := false
+	if after > 0 {
+		for start < len(entries) && entries[start].ID <= after {
+			start++
+		}
+		if len(entries) > 0 && after < entries[0].ID-1 {
+			truncated = true
+			start = 0
+		}
+	} else {
+		if tail <= 0 || tail > len(entries) {
+			tail = len(entries)
+		}
+		start = len(entries) - tail
 	}
-	out := append([]string(nil), lines[len(lines)-tail:]...)
-	return out, nil
+
+	out := append([]task.LogEntry(nil), entries[start:]...)
+	response := &task.LogResponse{
+		TaskID:    id,
+		Truncated: truncated,
+		Entries:   out,
+	}
+	if len(out) > 0 {
+		response.StartID = out[0].ID
+		response.EndID = out[len(out)-1].ID
+	} else if len(entries) > 0 {
+		response.StartID = entries[0].ID
+		response.EndID = entries[len(entries)-1].ID
+	}
+	return response, nil
 }
 
 func (s *MemoryStore) load() error {
@@ -191,10 +221,19 @@ func (s *MemoryStore) load() error {
 		t.ExitedAt = nil
 		s.tasks[t.ID] = cloneTask(t)
 		if _, ok := s.logs[t.ID]; !ok {
-			s.logs[t.ID] = []string{time.Now().UTC().Format(time.RFC3339) + " task loaded"}
+			s.logs[t.ID] = []task.LogEntry{s.newLogEntryLocked(t.ID, time.Now().UTC().Format(time.RFC3339)+" task loaded")}
 		}
 	}
 	return nil
+}
+
+func (s *MemoryStore) newLogEntryLocked(id, text string) task.LogEntry {
+	next := s.nextLog[id] + 1
+	s.nextLog[id] = next
+	return task.LogEntry{
+		ID:   next,
+		Text: text,
+	}
 }
 
 func (s *MemoryStore) saveLocked() error {

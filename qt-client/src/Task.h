@@ -15,3 +15,8 @@ struct Task {
     QString startedAt;
     QString exitedAt;
 };
+
+struct LogEntry {
+    quint64 id = 0;
+    QString text;
+};

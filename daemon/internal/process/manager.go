@@ -153,55 +153,35 @@ func (m *Manager) StopAll() {
 }
 
 func (m *Manager) scanOutput(id string, r io.Reader) {
-	var line []byte
-	replaceLine := false
-	pendingCarriageReturn := false
+	var chunk []byte
 	buffer := make([]byte, 4096)
 
-	emit := func(replace bool) {
-		if len(line) == 0 {
+	emit := func() {
+		if len(chunk) == 0 {
 			return
 		}
-		text := textdecode.BytesToString(append([]byte(nil), line...))
-		if replace {
-			text = "\r" + text
-		}
+		text := textdecode.BytesToString(append([]byte(nil), chunk...))
 		m.store.AppendLog(id, text)
-		line = line[:0]
+		chunk = chunk[:0]
 	}
 
 	for {
 		n, err := r.Read(buffer)
 		for _, b := range buffer[:n] {
-			if pendingCarriageReturn {
-				if b == '\n' {
-					emit(false)
-					replaceLine = false
-					pendingCarriageReturn = false
-					continue
-				}
-				emit(replaceLine)
-				replaceLine = true
-				pendingCarriageReturn = false
-			}
-
 			switch b {
 			case '\r':
-				pendingCarriageReturn = true
+				emit()
+				chunk = append(chunk, b)
 			case '\n':
-				emit(false)
-				replaceLine = false
+				chunk = append(chunk, b)
+				emit()
 			default:
-				line = append(line, b)
+				chunk = append(chunk, b)
 			}
 		}
 
 		if err != nil {
-			if pendingCarriageReturn {
-				emit(replaceLine || len(line) > 0)
-			} else {
-				emit(false)
-			}
+			emit()
 			return
 		}
 	}

@@ -143,7 +143,10 @@ func (m *Manager) appendLine(relativePath, line string) {
 	if line == "" {
 		line = " "
 	}
-	_, _ = m.write(relativePath, []byte(line+"\n"))
+	if !strings.ContainsAny(line, "\r\n") {
+		line += "\n"
+	}
+	_, _ = m.write(relativePath, []byte(line))
 }
 
 func (m *Manager) write(relativePath string, data []byte) (int, error) {

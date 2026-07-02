@@ -5,6 +5,7 @@
 
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QSortFilterProxyModel>
@@ -38,7 +39,7 @@ private slots:
     void onTaskHeaderSectionResized(int logicalIndex, int oldSize, int newSize);
     void onSelectionChanged();
     void onTasksLoaded(const QList<Task> &tasks);
-    void onLogsLoaded(const QString &taskId, const QStringList &lines);
+    void onLogsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
 
 private:
     QString selectedTaskId() const;
@@ -72,7 +73,7 @@ private:
     QTimer m_refreshTimer;
     QTimer m_logTimer;
     QString m_loadedLogTaskId;
-    QStringList m_loadedLogLines;
+    quint64 m_lastLogEntryId = 0;
     QTextCharFormat m_logFormat;
     bool m_columnsSizedToContents = false;
     bool m_resizingColumns = false;

@@ -3,6 +3,7 @@
 #include "Task.h"
 
 #include <QJsonObject>
+#include <QList>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QUrl>
@@ -23,14 +24,14 @@ public:
     void stopTask(const QString &id);
     void restartTask(const QString &id);
     void deleteTask(const QString &id);
-    void fetchLogs(const QString &id, int tail = 500);
+    void fetchLogs(const QString &id, quint64 after = 0, int tail = 500);
     void health();
 
 signals:
     void healthChanged(bool ok);
     void tasksLoaded(const QList<Task> &tasks);
     void taskUpdated(const Task &task);
-    void logsLoaded(const QString &taskId, const QStringList &lines);
+    void logsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
     void errorOccurred(const QString &message);
 
 private:

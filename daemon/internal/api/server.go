@@ -161,12 +161,13 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
-	lines, err := s.store.TailLogs(id, tail)
+	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+	logs, err := s.store.TailLogs(id, tail, after)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, task.LogResponse{TaskID: id, Lines: lines})
+	writeJSON(w, http.StatusOK, logs)
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
