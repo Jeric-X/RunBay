@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QCheckBox>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -17,10 +18,12 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QProcess>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStyle>
 #include <QStringList>
+#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -29,6 +32,176 @@ namespace {
 QString powershellSingleQuoted(QString value) {
     value.replace(QLatin1Char('\''), QStringLiteral("''"));
     return QStringLiteral("'%1'").arg(value);
+}
+
+QColor ansiColor(int index) {
+    static const QColor colors[] = {
+        QColor(0x2e, 0x34, 0x40),
+        QColor(0xbf, 0x61, 0x6a),
+        QColor(0xa3, 0xbe, 0x8c),
+        QColor(0xeb, 0xcb, 0x8b),
+        QColor(0x81, 0xa1, 0xc1),
+        QColor(0xb4, 0x8e, 0xad),
+        QColor(0x88, 0xc0, 0xd0),
+        QColor(0xe5, 0xe9, 0xf0),
+        QColor(0x4c, 0x56, 0x6a),
+        QColor(0xbf, 0x61, 0x6a).lighter(125),
+        QColor(0xa3, 0xbe, 0x8c).lighter(125),
+        QColor(0xeb, 0xcb, 0x8b).lighter(115),
+        QColor(0x81, 0xa1, 0xc1).lighter(125),
+        QColor(0xb4, 0x8e, 0xad).lighter(125),
+        QColor(0x8f, 0xbc, 0xbb).lighter(115),
+        QColor(0xec, 0xef, 0xf4),
+    };
+    return colors[qBound(0, index, 15)];
+}
+
+QColor ansi256Color(int index) {
+    index = qBound(0, index, 255);
+    if (index < 16) {
+        return ansiColor(index);
+    }
+    if (index < 232) {
+        const int color = index - 16;
+        const int r = color / 36;
+        const int g = (color / 6) % 6;
+        const int b = color % 6;
+        auto component = [](int value) {
+            return value == 0 ? 0 : 55 + value * 40;
+        };
+        return QColor(component(r), component(g), component(b));
+    }
+    const int gray = 8 + (index - 232) * 10;
+    return QColor(gray, gray, gray);
+}
+
+QList<int> sgrParameters(const QString &sequence) {
+    QList<int> values;
+    const QStringList parts = sequence.split(QLatin1Char(';'), Qt::KeepEmptyParts);
+    for (const QString &part : parts) {
+        bool ok = false;
+        const int value = part.toInt(&ok);
+        values.append(ok ? value : 0);
+    }
+    if (values.isEmpty()) {
+        values.append(0);
+    }
+    return values;
+}
+
+void applyAnsiSgr(const QList<int> &params, QTextCharFormat *format) {
+    if (!format) {
+        return;
+    }
+
+    for (int i = 0; i < params.size(); ++i) {
+        const int code = params.at(i);
+        if (code == 0) {
+            *format = QTextCharFormat();
+        } else if (code == 1) {
+            format->setFontWeight(QFont::Bold);
+        } else if (code == 3) {
+            format->setFontItalic(true);
+        } else if (code == 4) {
+            format->setFontUnderline(true);
+        } else if (code == 22) {
+            format->setFontWeight(QFont::Normal);
+        } else if (code == 23) {
+            format->setFontItalic(false);
+        } else if (code == 24) {
+            format->setFontUnderline(false);
+        } else if (code == 39) {
+            format->clearForeground();
+        } else if (code == 49) {
+            format->clearBackground();
+        } else if (code >= 30 && code <= 37) {
+            format->setForeground(ansiColor(code - 30));
+        } else if (code >= 90 && code <= 97) {
+            format->setForeground(ansiColor(code - 90 + 8));
+        } else if (code >= 40 && code <= 47) {
+            format->setBackground(ansiColor(code - 40));
+        } else if (code >= 100 && code <= 107) {
+            format->setBackground(ansiColor(code - 100 + 8));
+        } else if ((code == 38 || code == 48) && i + 1 < params.size()) {
+            const bool foreground = code == 38;
+            const int mode = params.at(++i);
+            QColor color;
+            if (mode == 5 && i + 1 < params.size()) {
+                color = ansi256Color(params.at(++i));
+            } else if (mode == 2 && i + 3 < params.size()) {
+                color = QColor(qBound(0, params.at(++i), 255),
+                               qBound(0, params.at(++i), 255),
+                               qBound(0, params.at(++i), 255));
+            }
+            if (color.isValid()) {
+                if (foreground) {
+                    format->setForeground(color);
+                } else {
+                    format->setBackground(color);
+                }
+            }
+        }
+    }
+}
+
+void appendAnsiText(QPlainTextEdit *edit, const QString &text, QTextCharFormat *format) {
+    QTextCursor cursor(edit->document());
+    cursor.movePosition(QTextCursor::End);
+    if (!format) {
+        return;
+    }
+
+    QString plain;
+
+    auto flushPlainText = [&]() {
+        if (!plain.isEmpty()) {
+            cursor.insertText(plain, *format);
+            plain.clear();
+        }
+    };
+
+    for (int i = 0; i < text.size();) {
+        const QChar ch = text.at(i);
+        if (ch == QLatin1Char('\x1b') && i + 1 < text.size() && text.at(i + 1) == QLatin1Char('[')) {
+            int end = i + 2;
+            while (end < text.size()) {
+                const ushort u = text.at(end).unicode();
+                if (u >= 0x40 && u <= 0x7e) {
+                    break;
+                }
+                ++end;
+            }
+            if (end < text.size()) {
+                flushPlainText();
+                if (text.at(end) == QLatin1Char('m')) {
+                    applyAnsiSgr(sgrParameters(text.mid(i + 2, end - i - 2)), format);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+
+        if (ch == QLatin1Char('\r')) {
+            ++i;
+            continue;
+        }
+        plain.append(ch);
+        ++i;
+    }
+
+    flushPlainText();
+}
+
+bool startsWithLines(const QStringList &lines, const QStringList &prefix) {
+    if (prefix.size() > lines.size()) {
+        return false;
+    }
+    for (int i = 0; i < prefix.size(); ++i) {
+        if (lines.at(i) != prefix.at(i)) {
+            return false;
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -430,8 +603,17 @@ void MainWindow::onSelectionChanged() {
     updateActions();
     const QString id = selectedTaskId();
     if (!id.isEmpty()) {
+        if (id != m_loadedLogTaskId) {
+            m_loadedLogTaskId = id;
+            m_loadedLogLines.clear();
+            m_logFormat = QTextCharFormat();
+            m_logView->clear();
+        }
         m_api.fetchLogs(id);
     } else {
+        m_loadedLogTaskId.clear();
+        m_loadedLogLines.clear();
+        m_logFormat = QTextCharFormat();
         m_logView->clear();
         m_detailLabel->setText(QStringLiteral("No task selected"));
     }
@@ -488,8 +670,37 @@ void MainWindow::onLogsLoaded(const QString &taskId, const QStringList &lines) {
     if (taskId != selectedTaskId()) {
         return;
     }
-    m_logView->setPlainText(lines.join(QLatin1Char('\n')));
-    m_logView->moveCursor(QTextCursor::End);
+
+    const bool resetLog = taskId != m_loadedLogTaskId || !startsWithLines(lines, m_loadedLogLines);
+    const QStringList newLines = resetLog ? lines : lines.mid(m_loadedLogLines.size());
+    if (newLines.isEmpty() && !resetLog) {
+        return;
+    }
+
+    const QTextCursor savedCursor = m_logView->textCursor();
+    const bool hadSelection = savedCursor.hasSelection();
+    QScrollBar *verticalScrollBar = m_logView->verticalScrollBar();
+    const bool wasAtBottom = verticalScrollBar->value() == verticalScrollBar->maximum();
+
+    if (resetLog) {
+        m_logView->clear();
+        m_logFormat = QTextCharFormat();
+    }
+
+    QString text = newLines.join(QLatin1Char('\n'));
+    if (!resetLog && !m_loadedLogLines.isEmpty() && !text.isEmpty()) {
+        text.prepend(QLatin1Char('\n'));
+    }
+    appendAnsiText(m_logView, text, &m_logFormat);
+
+    m_loadedLogTaskId = taskId;
+    m_loadedLogLines = lines;
+
+    if (hadSelection && !resetLog) {
+        m_logView->setTextCursor(savedCursor);
+    } else if (wasAtBottom || resetLog) {
+        m_logView->moveCursor(QTextCursor::End);
+    }
 }
 
 QString MainWindow::selectedTaskId() const {

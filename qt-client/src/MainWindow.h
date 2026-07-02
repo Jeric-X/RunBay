@@ -8,7 +8,9 @@
 #include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QSortFilterProxyModel>
+#include <QStringList>
 #include <QTableView>
+#include <QTextCharFormat>
 #include <QTimer>
 
 class MainWindow : public QMainWindow {
@@ -63,6 +65,9 @@ private:
     QAction *m_deleteAction = nullptr;
     QTimer m_refreshTimer;
     QTimer m_logTimer;
+    QString m_loadedLogTaskId;
+    QStringList m_loadedLogLines;
+    QTextCharFormat m_logFormat;
     bool m_columnsSizedToContents = false;
     bool m_resizingColumns = false;
     bool m_serviceStartAttempted = false;

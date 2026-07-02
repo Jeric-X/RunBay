@@ -58,7 +58,7 @@ func (m *Manager) Start(id string) (*task.Task, error) {
 
 	cmd := shellCommand(t.Command)
 	cmd.Dir = t.Cwd
-	cmd.Env = append(os.Environ(), envPairs(t.Env)...)
+	cmd.Env = processEnv(t.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -210,4 +210,15 @@ func envPairs(env map[string]string) []string {
 		pairs = append(pairs, k+"="+v)
 	}
 	return pairs
+}
+
+func processEnv(taskEnv map[string]string) []string {
+	env := os.Environ()
+	if runtime.GOOS == "windows" {
+		env = append(env,
+			"PYTHONUTF8=1",
+			"PYTHONIOENCODING=utf-8",
+		)
+	}
+	return append(env, envPairs(taskEnv)...)
 }
