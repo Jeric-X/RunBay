@@ -1,0 +1,90 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "RunBay: Build daemon",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/scripts/build-daemon.ps1",
+                "-C",
+                "Debug"
+            ],
+            "group": "build",
+            "problemMatcher": "$go"
+        },
+        {
+            "label": "RunBay: Run daemon",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/scripts/run-daemon.ps1"
+            ],
+            "isBackground": false,
+            "problemMatcher": []
+        },
+        {
+            "label": "RunBay: Build Qt client",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/scripts/build-qt.ps1",
+                "-C",
+                "Debug",
+                "-QtPrefix=${config:runbay.qtPrefix}"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "RunBay: Build all",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/scripts/build-all.ps1",
+                "-C",
+                "Debug",
+                "-QtPrefix=${config:runbay.qtPrefix}"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOrder": "sequence",
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "RunBay: Package Windows",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/scripts/package-windows.ps1",
+                "-C",
+                "Release",
+                "-QtPrefix=${config:runbay.qtPrefix}"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}

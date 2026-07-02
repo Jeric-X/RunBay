@@ -1,0 +1,6 @@
+{
+    "cmake.sourceDirectory": "C:/Nextcloud/Code/RunBay/qt-client",
+    "cmake.buildDirectory": "${workspaceFolder}/qt-client/build/${buildType}",
+    "runbay.qtPrefix": "",
+    "runbay.gdbPath": "gdb.exe"
+}

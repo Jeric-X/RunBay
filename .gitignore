@@ -1,0 +1,22 @@
+# Go
+daemon/bin/
+daemon/*.exe
+
+# CMake / Qt
+qt-client/build*/
+qt-client/.qt/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Packaged outputs
+dist/
+
+# Editors
+.idea/
+.vscode/*.local.json
+
+# Runtime data
+*.log
+runbay.db

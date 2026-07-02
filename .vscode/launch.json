@@ -1,0 +1,61 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "RunBay: Debug daemon (Go)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/daemon/cmd/runbayd",
+            "cwd": "${workspaceFolder}/daemon",
+            "args": [
+                "-addr",
+                "127.0.0.1:8732"
+            ]
+        },
+        {
+            "name": "RunBay: Debug Qt client (MSVC)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/qt-client/build/Debug/bin/runbay-client.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/qt-client",
+            "environment": [],
+            "console": "internalConsole",
+            "preLaunchTask": "RunBay: Build Qt client"
+        },
+        {
+            "name": "RunBay: Debug Qt client (MinGW)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/qt-client/build/Debug/bin/runbay-client.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/qt-client",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "${config:runbay.gdbPath}",
+            "preLaunchTask": "RunBay: Build Qt client"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "RunBay: Daemon + Qt client (MSVC)",
+            "configurations": [
+                "RunBay: Debug daemon (Go)",
+                "RunBay: Debug Qt client (MSVC)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "RunBay: Daemon + Qt client (MinGW)",
+            "configurations": [
+                "RunBay: Debug daemon (Go)",
+                "RunBay: Debug Qt client (MinGW)"
+            ],
+            "stopAll": true
+        }
+    ]
+}
