@@ -1,0 +1,61 @@
+name: Package Windows
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: Package Windows
+    runs-on: windows-latest
+
+    env:
+      CONFIGURATION: Release
+      QT_VERSION: 6.8.3
+      QT_ARCH: win64_msvc2022_64
+      QT_PREFIX: "C:\\Qt\\6.8.3\\msvc2022_64"
+      PACKAGE_DIR: "dist\\Release"
+      ZIP_PATH: "dist\\RunBay-windows-Release.zip"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: daemon/go.sum
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ env.QT_ARCH }}
+          dir: "C:\\Qt"
+          cache: true
+
+      - name: Package
+        shell: pwsh
+        run: |
+          .\scripts\package-windows.ps1 -C $env:CONFIGURATION -QtPrefix $env:QT_PREFIX
+
+      - name: Create zip
+        shell: pwsh
+        run: |
+          if (Test-Path $env:ZIP_PATH) {
+            Remove-Item -LiteralPath $env:ZIP_PATH -Force
+          }
+          Compress-Archive -Path (Join-Path $env:PACKAGE_DIR '*') -DestinationPath $env:ZIP_PATH -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: RunBay-windows-Release
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error

@@ -130,6 +130,8 @@ if ($packageClient) {
     )
     if ($IncludeCompilerRuntime) {
         $deployArgs += "--compiler-runtime"
+    } else {
+        $deployArgs += "--no-compiler-runtime"
     }
     if ($Configuration -ieq "Debug") {
         $deployArgs += "--debug"

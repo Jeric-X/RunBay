@@ -2,12 +2,12 @@
 
 RunBay is a local daemon plus desktop client for managing long-running scripts.
 
-This repository currently contains a first working skeleton:
+The project is split into two components:
 
 - `daemon`: Go HTTP daemon for task registry, process supervision, and log tailing.
 - `qt-client`: Qt Widgets desktop client that talks to the daemon API.
 
-## First milestone
+## API
 
 The daemon listens on `127.0.0.1:8732` by default and exposes:
 
@@ -19,12 +19,11 @@ The daemon listens on `127.0.0.1:8732` by default and exposes:
 - `POST /api/tasks/{id}/start`
 - `POST /api/tasks/{id}/stop`
 - `POST /api/tasks/{id}/restart`
-- `GET /api/tasks/{id}/logs?tail=500`
+- `GET /api/tasks/{id}/logs?tail=500&after=123`
 
-The current daemon uses an in-memory task registry so the first loop stays easy
-to run and debug, with task definitions persisted to a JSON file. SQLite,
-scheduling, service installation, and WebSocket streaming are the next natural
-steps.
+Task definitions are persisted to a JSON file. Task logs are returned as
+ordered entries with monotonically increasing ids, so clients can request only
+entries after the last id they have rendered.
 
 ## Run locally
 
@@ -65,10 +64,12 @@ Helper scripts:
 
 ```powershell
 .\scripts\build-daemon.ps1
-.\scripts\build-qt.ps1 -QtPrefix C:\Qt\6.8.0\msvc2022_64
-.\scripts\build-all.ps1 -QtPrefix C:\Qt\6.8.0\msvc2022_64
-.\scripts\build-all.ps1 -C Release -QtPrefix C:\Qt\6.8.0\msvc2022_64
-.\scripts\package-windows.ps1 -C Release -QtPrefix C:\Qt\6.8.0\msvc2022_64
+.\scripts\build-qt.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64
+.\scripts\build-all.ps1 -QtPrefix C:\Qt\6.8.3\msvc2022_64
+.\scripts\build-all.ps1 -C Release -QtPrefix C:\Qt\6.8.3\msvc2022_64
+.\scripts\package-windows.ps1 -C Release -QtPrefix C:\Qt\6.8.3\msvc2022_64
+.\scripts\package-windows.ps1 -C Release -T Client -QtPrefix C:\Qt\6.8.3\msvc2022_64
+.\scripts\package-windows.ps1 -C Release -T Daemon
 ```
 
 Build outputs are separated by configuration:
@@ -76,12 +77,18 @@ Build outputs are separated by configuration:
 - daemon: `daemon\bin\Debug\runbayd.exe` or `daemon\bin\Release\runbayd.exe`
 - Qt client: `qt-client\build\Debug\bin\runbay-client.exe` or `qt-client\build\Release\bin\runbay-client.exe`
 
-Windows packages are written to `dist\<Configuration>` and include both
-`runbayd.exe`, `runbay-client.exe`, and Qt DLL/plugin dependencies copied by
-`windeployqt`. The package script skips Qt translations, software OpenGL, and
-the system D3D compiler payload to keep the Windows package smaller. It does
-not include the MSVC runtime installer by default; pass
-`-IncludeCompilerRuntime` if you want `windeployqt --compiler-runtime`.
+Windows packages are written to `dist\<Configuration>`. By default,
+`package-windows.ps1` packages both `runbayd.exe` and `runbay-client.exe`; pass
+`-T Client` or `-T Daemon` to package only one side. The shorthand `-T` is an
+alias for `-Target`. Partial packaging updates the existing output directory in
+place, while the default `-T All` cleans the output directory unless `-NoClean`
+is passed.
+
+The client package includes Qt DLL/plugin dependencies copied by `windeployqt`.
+The package script skips Qt translations, software OpenGL, the system D3D
+compiler payload, and the MSVC runtime installer to keep the Windows package
+smaller. Pass `-IncludeCompilerRuntime` if you want
+`windeployqt --compiler-runtime`.
 
 The Windows package also includes service helper scripts. Run these from an
 elevated PowerShell:
@@ -93,8 +100,23 @@ elevated PowerShell:
 
 When installed as the `RunBay` Windows service, `runbayd.exe` uses the native
 Windows Service Control Manager protocol. The Qt client checks `/api/health`
-on startup; if the daemon is not reachable, it checks the `RunBay` service and
-tries to start it if installed.
+and shows service state in the status bar, including whether the service is
+installed, running, and configured for automatic startup. It does not install
+or start the service automatically; use the Service menu to install, start,
+stop, or delete it.
+
+Daemon and task log files are written under `%ProgramData%\RunBay\logs` on
+Windows. Logs are grouped by date folder and old folders are pruned daily, with
+the latest seven days retained.
+
+## GitHub Actions
+
+The `Package Windows` workflow runs on every push and can also be started
+manually from the Actions tab. It builds the Release daemon and Qt client on
+`windows-latest` with Go 1.22, MSVC x64, and Qt 6.8.3
+`win64_msvc2022_64`, then packages `dist\Release` into
+`dist\RunBay-windows-Release.zip` and uploads it as the
+`RunBay-windows-Release` artifact.
 
 VS Code:
 
@@ -102,6 +124,6 @@ VS Code:
 - Install the C/C++ extension for Qt client debugging.
 - If Qt is not discoverable automatically, set `runbay.qtPrefix` in
   `.vscode/settings.json` to your Qt kit path, for example
-  `C:\Qt\6.8.0\msvc2022_64`.
+  `C:\Qt\6.8.3\msvc2022_64`.
 - Use `RunBay: Debug Qt client (MSVC)` for MSVC kits or
   `RunBay: Debug Qt client (MinGW)` for MinGW kits.
