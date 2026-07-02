@@ -182,6 +182,10 @@ void appendAnsiText(QPlainTextEdit *edit, const QString &text, QTextCharFormat *
         }
 
         if (ch == QLatin1Char('\r')) {
+            flushPlainText();
+            cursor.movePosition(QTextCursor::End);
+            cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+            cursor.removeSelectedText();
             ++i;
             continue;
         }
@@ -202,6 +206,50 @@ bool startsWithLines(const QStringList &lines, const QStringList &prefix) {
         }
     }
     return true;
+}
+
+QString terminalTextForLines(const QStringList &newLines, bool resetLog, const QStringList &previousLines) {
+    QString text;
+    bool hasRenderedLine = !resetLog && !previousLines.isEmpty();
+    bool previousWasProgress = hasRenderedLine && previousLines.last().startsWith(QLatin1Char('\r'));
+
+    for (const QString &line : newLines) {
+        const bool isProgress = line.startsWith(QLatin1Char('\r'));
+        if (!text.isEmpty() || hasRenderedLine) {
+            if (!isProgress || !previousWasProgress) {
+                text.append(QLatin1Char('\n'));
+            }
+        }
+        text.append(line);
+        hasRenderedLine = true;
+        previousWasProgress = isProgress;
+    }
+    return text;
+}
+
+QString serviceStartTypeLabel() {
+#ifndef Q_OS_WIN
+    return {};
+#else
+    QProcess queryConfig;
+    queryConfig.start(QStringLiteral("sc.exe"), {QStringLiteral("qc"), QStringLiteral("RunBay")});
+    if (!queryConfig.waitForFinished(2000) || queryConfig.exitCode() != 0) {
+        queryConfig.kill();
+        return QStringLiteral("startup unknown");
+    }
+
+    const QString output = QString::fromLocal8Bit(queryConfig.readAllStandardOutput() + queryConfig.readAllStandardError());
+    if (output.contains(QStringLiteral("DISABLED"), Qt::CaseInsensitive)) {
+        return QStringLiteral("disabled");
+    }
+    if (output.contains(QStringLiteral("DEMAND_START"), Qt::CaseInsensitive)) {
+        return QStringLiteral("manual start");
+    }
+    if (output.contains(QStringLiteral("AUTO_START"), Qt::CaseInsensitive)) {
+        return QStringLiteral("auto start");
+    }
+    return QStringLiteral("startup unknown");
+#endif
 }
 } // namespace
 
@@ -247,7 +295,14 @@ void MainWindow::buildUi() {
 
     QMenu *serviceMenu = menuBar()->addMenu(QStringLiteral("Service"));
     QAction *installServiceAction = serviceMenu->addAction(QStringLiteral("Install Service"));
+    QAction *startServiceAction = serviceMenu->addAction(QStringLiteral("Start Service"));
+    QAction *stopServiceAction = serviceMenu->addAction(QStringLiteral("Stop Service"));
+    serviceMenu->addSeparator();
+    QAction *deleteServiceAction = serviceMenu->addAction(QStringLiteral("Delete Service"));
     connect(installServiceAction, &QAction::triggered, this, &MainWindow::installService);
+    connect(startServiceAction, &QAction::triggered, this, &MainWindow::startService);
+    connect(stopServiceAction, &QAction::triggered, this, &MainWindow::stopService);
+    connect(deleteServiceAction, &QAction::triggered, this, &MainWindow::deleteService);
 
     QToolBar *toolbar = addToolBar(QStringLiteral("Tasks"));
     toolbar->setMovable(false);
@@ -546,6 +601,80 @@ void MainWindow::installService() {
 #endif
 }
 
+void MainWindow::deleteService() {
+#ifndef Q_OS_WIN
+    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service deletion is only available on Windows."));
+    return;
+#else
+    if (QMessageBox::question(this, QStringLiteral("Delete Service"), QStringLiteral("Delete the RunBay service?")) != QMessageBox::Yes) {
+        return;
+    }
+
+    const QString command = QStringLiteral(
+        "$ErrorActionPreference='Stop'; "
+        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
+        "if (-not $existing) { exit 0; } "
+        "if ($existing.Status -ne 'Stopped') { sc.exe stop RunBay | Out-Null; Start-Sleep -Milliseconds 700; } "
+        "sc.exe delete RunBay | Out-Null;");
+    if (!runElevatedPowerShell(command)) {
+        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service deletion prompt."));
+        return;
+    }
+
+    setServiceStatus(QStringLiteral("Service deletion requested administrator approval..."));
+    QTimer::singleShot(3000, this, [this]() {
+        m_serviceStartAttempted = false;
+        refresh();
+    });
+#endif
+}
+
+void MainWindow::startService() {
+#ifndef Q_OS_WIN
+    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service control is only available on Windows."));
+    return;
+#else
+    const QString command = QStringLiteral(
+        "$ErrorActionPreference='Stop'; "
+        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
+        "if (-not $existing) { throw 'RunBay service is not installed.'; } "
+        "if ($existing.Status -ne 'Running') { sc.exe start RunBay | Out-Null; }");
+    if (!runElevatedPowerShell(command)) {
+        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service start prompt."));
+        return;
+    }
+
+    setServiceStatus(QStringLiteral("Service start requested administrator approval..."));
+    QTimer::singleShot(3000, this, [this]() {
+        m_serviceStartAttempted = false;
+        refresh();
+    });
+#endif
+}
+
+void MainWindow::stopService() {
+#ifndef Q_OS_WIN
+    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service control is only available on Windows."));
+    return;
+#else
+    const QString command = QStringLiteral(
+        "$ErrorActionPreference='Stop'; "
+        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
+        "if (-not $existing) { throw 'RunBay service is not installed.'; } "
+        "if ($existing.Status -ne 'Stopped') { sc.exe stop RunBay | Out-Null; }");
+    if (!runElevatedPowerShell(command)) {
+        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service stop prompt."));
+        return;
+    }
+
+    setServiceStatus(QStringLiteral("Service stop requested administrator approval..."));
+    QTimer::singleShot(3000, this, [this]() {
+        m_serviceStartAttempted = false;
+        refresh();
+    });
+#endif
+}
+
 QString MainWindow::bundledDaemonPath() const {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QStringList candidates = {
@@ -584,11 +713,20 @@ bool MainWindow::installServiceWithDaemon(const QString &daemonPath) {
         "sc.exe failure RunBay reset= 60 actions= restart/5000/restart/5000/none/0 | Out-Null; "
         "sc.exe start RunBay | Out-Null;")
                                        .arg(quotedDaemon);
+    return runElevatedPowerShell(installCommand);
+#endif
+}
+
+bool MainWindow::runElevatedPowerShell(const QString &command) {
+#ifndef Q_OS_WIN
+    Q_UNUSED(command)
+    return false;
+#else
     const QString elevateCommand = QStringLiteral(
         "Start-Process -FilePath 'powershell.exe' "
         "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',%1) "
         "-Verb RunAs")
-                                       .arg(powershellSingleQuoted(installCommand));
+                                       .arg(powershellSingleQuoted(command));
 
     return QProcess::startDetached(QStringLiteral("powershell.exe"),
                                    {QStringLiteral("-NoProfile"),
@@ -687,10 +825,7 @@ void MainWindow::onLogsLoaded(const QString &taskId, const QStringList &lines) {
         m_logFormat = QTextCharFormat();
     }
 
-    QString text = newLines.join(QLatin1Char('\n'));
-    if (!resetLog && !m_loadedLogLines.isEmpty() && !text.isEmpty()) {
-        text.prepend(QLatin1Char('\n'));
-    }
+    QString text = terminalTextForLines(newLines, resetLog, m_loadedLogLines);
     appendAnsiText(m_logView, text, &m_logFormat);
 
     m_loadedLogTaskId = taskId;
@@ -754,32 +889,14 @@ void MainWindow::ensureDaemonServiceStarted() {
         return;
     }
 
+    const QString startType = serviceStartTypeLabel();
     if (output.contains(QStringLiteral("RUNNING"), Qt::CaseInsensitive)) {
-        setServiceStatus(QStringLiteral("RunBay service is running; waiting for daemon..."));
+        setServiceStatus(QStringLiteral("RunBay service is running (%1); waiting for daemon...").arg(startType));
         QTimer::singleShot(1000, this, &MainWindow::refresh);
         return;
     }
 
-    QProcess start;
-    start.start(QStringLiteral("sc.exe"), {QStringLiteral("start"), QStringLiteral("RunBay")});
-    if (!start.waitForFinished(3000)) {
-        start.kill();
-        setServiceStatus(QStringLiteral("Starting RunBay service timed out"));
-        QTimer::singleShot(1800, this, &MainWindow::refresh);
-        return;
-    }
-
-    const QString startOutput = QString::fromLocal8Bit(start.readAllStandardOutput() + start.readAllStandardError()).simplified();
-    if (start.exitCode() != 0) {
-        setServiceStatus(QStringLiteral("Disconnected; failed to start RunBay service"));
-        if (!startOutput.isEmpty()) {
-            statusBar()->showMessage(startOutput, 7000);
-        }
-        return;
-    }
-
-    setServiceStatus(QStringLiteral("Starting RunBay service..."));
-    QTimer::singleShot(1800, this, &MainWindow::refresh);
+    setServiceStatus(QStringLiteral("Disconnected; RunBay service is not running (%1)").arg(startType));
 #else
     setServiceStatus(QStringLiteral("Disconnected"));
 #endif

@@ -2,8 +2,8 @@ package store
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +21,11 @@ type MemoryStore struct {
 	tasks    map[string]*task.Task
 	logs     map[string][]string
 	dataPath string
+	logSink  LogSink
+}
+
+type LogSink interface {
+	AppendTaskLine(taskID, line string)
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -28,9 +33,14 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func NewMemoryStoreWithPath(dataPath string) *MemoryStore {
+	return NewMemoryStoreWithPathAndLogSink(dataPath, nil)
+}
+
+func NewMemoryStoreWithPathAndLogSink(dataPath string, logSink LogSink) *MemoryStore {
 	store := &MemoryStore{
-		tasks: make(map[string]*task.Task),
-		logs:  make(map[string][]string),
+		tasks:   make(map[string]*task.Task),
+		logs:    make(map[string][]string),
+		logSink: logSink,
 	}
 	if dataPath != "" {
 		store.dataPath = dataPath
@@ -43,24 +53,31 @@ func NewMemoryStoreWithPath(dataPath string) *MemoryStore {
 
 func (s *MemoryStore) Create(req task.CreateRequest) (*task.Task, error) {
 	now := time.Now().UTC()
+	createdLine := now.Format(time.RFC3339) + " task created"
 	t := &task.Task{
-		ID:                  newID(),
-		Name:                req.Name,
-		Command:             req.Command,
-		Cwd:                 req.Cwd,
-		Env:                 req.Env,
-		StartOnLaunch:       req.StartOnLaunch,
-		Status:              task.StatusExited,
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ID:            newID(),
+		Name:          req.Name,
+		Command:       req.Command,
+		Cwd:           req.Cwd,
+		Env:           req.Env,
+		StartOnLaunch: req.StartOnLaunch,
+		Status:        task.StatusExited,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.tasks[t.ID] = cloneTask(t)
-	s.logs[t.ID] = []string{now.Format(time.RFC3339) + " task created"}
+	s.logs[t.ID] = []string{createdLine}
 	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
 		return nil, err
+	}
+	logSink := s.logSink
+	s.mu.Unlock()
+
+	if logSink != nil {
+		logSink.AppendTaskLine(t.ID, createdLine)
 	}
 	return cloneTask(t), nil
 }
@@ -119,11 +136,16 @@ func (s *MemoryStore) Delete(id string) error {
 
 func (s *MemoryStore) AppendLog(id, line string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	const maxLines = 5000
 	s.logs[id] = append(s.logs[id], line)
 	if len(s.logs[id]) > maxLines {
 		s.logs[id] = append([]string(nil), s.logs[id][len(s.logs[id])-maxLines:]...)
+	}
+	logSink := s.logSink
+	s.mu.Unlock()
+
+	if logSink != nil {
+		logSink.AppendTaskLine(id, line)
 	}
 }
 

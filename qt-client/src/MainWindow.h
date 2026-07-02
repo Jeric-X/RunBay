@@ -30,6 +30,9 @@ private slots:
     void restartSelectedTask();
     void deleteSelectedTask();
     void installService();
+    void deleteService();
+    void startService();
+    void stopService();
     void editTaskAt(const QModelIndex &index);
     void onTaskHeaderSectionResized(int logicalIndex, int oldSize, int newSize);
     void onSelectionChanged();
@@ -44,6 +47,7 @@ private:
     void ensureDaemonServiceStarted();
     QString bundledDaemonPath() const;
     bool installServiceWithDaemon(const QString &daemonPath);
+    bool runElevatedPowerShell(const QString &command);
     void setServiceStatus(const QString &message);
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);
     void resizeTaskColumnsToViewport(int viewportWidth);

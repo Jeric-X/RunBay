@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"runbay/daemon/internal/api"
+	"runbay/daemon/internal/logfiles"
 	"runbay/daemon/internal/process"
 	"runbay/daemon/internal/store"
 )
@@ -42,7 +44,16 @@ func main() {
 }
 
 func runDaemon(addr, dataPath string, stop <-chan struct{}) error {
-	taskStore := store.NewMemoryStoreWithPath(dataPath)
+	logManager := logfiles.New(logfiles.DefaultRoot(), logfiles.DefaultRetentionDays)
+	defer func() {
+		if err := logManager.Close(); err != nil {
+			log.Printf("failed to close log files: %v", err)
+		}
+	}()
+	log.SetOutput(io.MultiWriter(os.Stderr, logManager.DaemonWriter()))
+	logManager.StartCleanupLoop(stop)
+
+	taskStore := store.NewMemoryStoreWithPathAndLogSink(dataPath, logManager)
 	manager := process.NewManager(taskStore)
 	server := api.NewServer(taskStore, manager)
 	startLaunchTasks(taskStore, manager)
@@ -57,6 +68,7 @@ func runDaemon(addr, dataPath string, stop <-chan struct{}) error {
 	go func() {
 		log.Printf("runbayd listening on http://%s", addr)
 		log.Printf("task data: %s", dataPath)
+		log.Printf("log data: %s", logfiles.DefaultRoot())
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("listen failed: %v", err)
 			serverErr <- err

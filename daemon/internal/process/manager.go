@@ -1,7 +1,6 @@
 package process
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -154,11 +153,57 @@ func (m *Manager) StopAll() {
 }
 
 func (m *Manager) scanOutput(id string, r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024), 1024*1024)
-	for scanner.Scan() {
-		line := append([]byte(nil), scanner.Bytes()...)
-		m.store.AppendLog(id, textdecode.BytesToString(line))
+	var line []byte
+	replaceLine := false
+	pendingCarriageReturn := false
+	buffer := make([]byte, 4096)
+
+	emit := func(replace bool) {
+		if len(line) == 0 {
+			return
+		}
+		text := textdecode.BytesToString(append([]byte(nil), line...))
+		if replace {
+			text = "\r" + text
+		}
+		m.store.AppendLog(id, text)
+		line = line[:0]
+	}
+
+	for {
+		n, err := r.Read(buffer)
+		for _, b := range buffer[:n] {
+			if pendingCarriageReturn {
+				if b == '\n' {
+					emit(false)
+					replaceLine = false
+					pendingCarriageReturn = false
+					continue
+				}
+				emit(replaceLine)
+				replaceLine = true
+				pendingCarriageReturn = false
+			}
+
+			switch b {
+			case '\r':
+				pendingCarriageReturn = true
+			case '\n':
+				emit(false)
+				replaceLine = false
+			default:
+				line = append(line, b)
+			}
+		}
+
+		if err != nil {
+			if pendingCarriageReturn {
+				emit(replaceLine || len(line) > 0)
+			} else {
+				emit(false)
+			}
+			return
+		}
 	}
 }
 
