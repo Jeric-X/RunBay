@@ -6,6 +6,9 @@ param(
     [string]$OutputDir = "",
     [string]$BuildDir = "",
     [string]$Generator = "",
+    [Alias("T")]
+    [ValidateSet("All", "Client", "Daemon")]
+    [string]$Target = "All",
     [switch]$IncludeCompilerRuntime,
     [switch]$NoClean
 )
@@ -71,8 +74,16 @@ function Invoke-Checked {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$resolvedQtPrefix = Find-QtPrefix -RequestedPrefix $QtPrefix
-$windeployqt = Find-WinDeployQt -ResolvedQtPrefix $resolvedQtPrefix
+$packageClient = $Target -eq "All" -or $Target -eq "Client"
+$packageDaemon = $Target -eq "All" -or $Target -eq "Daemon"
+
+if ($packageClient) {
+    $resolvedQtPrefix = Find-QtPrefix -RequestedPrefix $QtPrefix
+    $windeployqt = Find-WinDeployQt -ResolvedQtPrefix $resolvedQtPrefix
+} else {
+    $resolvedQtPrefix = ""
+    $windeployqt = ""
+}
 
 if (-not $BuildDir) {
     $BuildDir = Join-Path (Join-Path $repoRoot "qt-client\build") $Configuration
@@ -81,44 +92,53 @@ if (-not $OutputDir) {
     $OutputDir = Join-Path (Join-Path $repoRoot "dist") $Configuration
 }
 
-& (Join-Path $PSScriptRoot "build-daemon.ps1") -C $Configuration
-& (Join-Path $PSScriptRoot "build-qt.ps1") -C $Configuration -QtPrefix $resolvedQtPrefix -BuildDir $BuildDir -Generator $Generator
+if ($packageDaemon) {
+    & (Join-Path $PSScriptRoot "build-daemon.ps1") -C $Configuration
+}
+if ($packageClient) {
+    & (Join-Path $PSScriptRoot "build-qt.ps1") -C $Configuration -QtPrefix $resolvedQtPrefix -BuildDir $BuildDir -Generator $Generator
+}
 
 $daemonExe = Join-Path $repoRoot "daemon\bin\$Configuration\runbayd.exe"
 $qtClientExe = Join-Path $BuildDir "bin\runbay-client.exe"
 
-if (-not (Test-Path $daemonExe)) {
+if ($packageDaemon -and -not (Test-Path $daemonExe)) {
     throw "Daemon executable was not found: $daemonExe"
 }
-if (-not (Test-Path $qtClientExe)) {
+if ($packageClient -and -not (Test-Path $qtClientExe)) {
     throw "Qt client executable was not found: $qtClientExe"
 }
 
-if ((Test-Path $OutputDir) -and -not $NoClean) {
+if ((Test-Path $OutputDir) -and -not $NoClean -and $Target -eq "All") {
     Remove-Item -LiteralPath $OutputDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-Copy-Item -LiteralPath $daemonExe -Destination (Join-Path $OutputDir "runbayd.exe") -Force
-Copy-Item -LiteralPath $qtClientExe -Destination (Join-Path $OutputDir "runbay-client.exe") -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-service.ps1") -Destination (Join-Path $OutputDir "install-service.ps1") -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall-service.ps1") -Destination (Join-Path $OutputDir "uninstall-service.ps1") -Force
-
-$deployArgs = @(
-    "--no-translations",
-    "--no-system-d3d-compiler",
-    "--no-opengl-sw"
-)
-if ($IncludeCompilerRuntime) {
-    $deployArgs += "--compiler-runtime"
+if ($packageDaemon) {
+    Copy-Item -LiteralPath $daemonExe -Destination (Join-Path $OutputDir "runbayd.exe") -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-service.ps1") -Destination (Join-Path $OutputDir "install-service.ps1") -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall-service.ps1") -Destination (Join-Path $OutputDir "uninstall-service.ps1") -Force
 }
-if ($Configuration -ieq "Debug") {
-    $deployArgs += "--debug"
-} else {
-    $deployArgs += "--release"
+
+if ($packageClient) {
+    Copy-Item -LiteralPath $qtClientExe -Destination (Join-Path $OutputDir "runbay-client.exe") -Force
+
+    $deployArgs = @(
+        "--no-translations",
+        "--no-system-d3d-compiler",
+        "--no-opengl-sw"
+    )
+    if ($IncludeCompilerRuntime) {
+        $deployArgs += "--compiler-runtime"
+    }
+    if ($Configuration -ieq "Debug") {
+        $deployArgs += "--debug"
+    } else {
+        $deployArgs += "--release"
+    }
+    $deployArgs += (Join-Path $OutputDir "runbay-client.exe")
+
+    Invoke-Checked -FilePath $windeployqt -Arguments $deployArgs
 }
-$deployArgs += (Join-Path $OutputDir "runbay-client.exe")
 
-Invoke-Checked -FilePath $windeployqt -Arguments $deployArgs
-
-Write-Host "Packaged RunBay: $OutputDir"
+Write-Host "Packaged RunBay ${Target}: $OutputDir"

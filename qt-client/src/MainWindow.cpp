@@ -13,6 +13,7 @@
 #include <QFontDatabase>
 #include <QFrame>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QMenu>
@@ -26,6 +27,7 @@
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -208,9 +210,9 @@ bool startsWithLines(const QStringList &lines, const QStringList &prefix) {
     return true;
 }
 
-QString terminalTextForLines(const QStringList &newLines, bool resetLog, const QStringList &previousLines) {
+QString terminalTextForLines(const QStringList &newLines, bool resetLog, const QStringList &previousLines, bool hasVisibleLog) {
     QString text;
-    bool hasRenderedLine = !resetLog && !previousLines.isEmpty();
+    bool hasRenderedLine = hasVisibleLog && !resetLog && !previousLines.isEmpty();
     bool previousWasProgress = hasRenderedLine && previousLines.last().startsWith(QLatin1Char('\r'));
 
     for (const QString &line : newLines) {
@@ -262,6 +264,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         statusBar()->showMessage(message, 5000);
     });
     connect(&m_api, &ApiClient::healthChanged, this, [this](bool ok) {
+        setDaemonConnected(ok);
         if (ok) {
             m_serviceStartAttempted = false;
             m_serviceStatusMessageActive = false;
@@ -275,6 +278,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     connect(&m_refreshTimer, &QTimer::timeout, this, &MainWindow::refresh);
     connect(&m_logTimer, &QTimer::timeout, this, [this]() {
+        if (!m_daemonConnected) {
+            return;
+        }
         const QString id = selectedTaskId();
         if (!id.isEmpty()) {
             m_api.fetchLogs(id);
@@ -384,6 +390,21 @@ void MainWindow::buildUi() {
     m_logTitleLabel = new QLabel(QStringLiteral("Logs"), this);
     m_logTitleLabel->setObjectName(QStringLiteral("SectionTitle"));
 
+    QToolButton *clearLogButton = new QToolButton(this);
+    clearLogButton->setIcon(style()->standardIcon(QStyle::SP_DialogResetButton));
+    clearLogButton->setToolTip(QStringLiteral("Clear log"));
+    clearLogButton->setAutoRaise(true);
+    connect(clearLogButton, &QToolButton::clicked, this, &MainWindow::clearLogView);
+
+    QFrame *logToolbar = new QFrame(this);
+    logToolbar->setFrameShape(QFrame::NoFrame);
+    QHBoxLayout *logToolbarLayout = new QHBoxLayout(logToolbar);
+    logToolbarLayout->setContentsMargins(0, 0, 0, 0);
+    logToolbarLayout->setSpacing(6);
+    logToolbarLayout->addWidget(m_logTitleLabel);
+    logToolbarLayout->addStretch(1);
+    logToolbarLayout->addWidget(clearLogButton);
+
     m_logView = new QPlainTextEdit(this);
     m_logView->setReadOnly(true);
     m_logView->setMaximumBlockCount(2000);
@@ -410,7 +431,7 @@ void MainWindow::buildUi() {
     rightLayout->setSpacing(10);
     rightLayout->addWidget(m_summaryLabel);
     rightLayout->addWidget(m_detailLabel);
-    rightLayout->addWidget(m_logTitleLabel);
+    rightLayout->addWidget(logToolbar);
     rightLayout->addWidget(m_logView, 1);
 
     QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
@@ -571,6 +592,11 @@ void MainWindow::deleteSelectedTask() {
     if (QMessageBox::question(this, QStringLiteral("Delete Task"), QStringLiteral("Delete the selected task?")) == QMessageBox::Yes) {
         m_api.deleteTask(id);
     }
+}
+
+void MainWindow::clearLogView() {
+    m_logView->clear();
+    m_logFormat = QTextCharFormat();
 }
 
 void MainWindow::installService() {
@@ -758,6 +784,7 @@ void MainWindow::onSelectionChanged() {
 }
 
 void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
+    setDaemonConnected(true);
     const QString previous = selectedTaskId();
     m_taskModel.setTasks(tasks);
 
@@ -825,7 +852,8 @@ void MainWindow::onLogsLoaded(const QString &taskId, const QStringList &lines) {
         m_logFormat = QTextCharFormat();
     }
 
-    QString text = terminalTextForLines(newLines, resetLog, m_loadedLogLines);
+    const bool hasVisibleLog = !m_logView->document()->isEmpty();
+    QString text = terminalTextForLines(newLines, resetLog, m_loadedLogLines, hasVisibleLog);
     appendAnsiText(m_logView, text, &m_logFormat);
 
     m_loadedLogTaskId = taskId;
@@ -850,10 +878,10 @@ QString MainWindow::selectedTaskId() const {
 void MainWindow::updateActions() {
     const QModelIndexList rows = m_taskView->selectionModel()->selectedRows();
     const bool hasSelection = !rows.isEmpty();
-    m_startAction->setEnabled(hasSelection);
-    m_stopAction->setEnabled(hasSelection);
-    m_restartAction->setEnabled(hasSelection);
-    m_deleteAction->setEnabled(hasSelection);
+    m_startAction->setEnabled(hasSelection && m_daemonConnected);
+    m_stopAction->setEnabled(hasSelection && m_daemonConnected);
+    m_restartAction->setEnabled(hasSelection && m_daemonConnected);
+    m_deleteAction->setEnabled(hasSelection && m_daemonConnected);
 
     if (!hasSelection) {
         return;
@@ -861,13 +889,26 @@ void MainWindow::updateActions() {
 
     const QModelIndex sourceIndex = m_proxyModel.mapToSource(rows.first());
     const Task task = m_taskModel.taskAt(sourceIndex.row());
+    const QString status = m_daemonConnected ? task.status : QStringLiteral("disconnected");
     m_detailLabel->setText(QStringLiteral("<b>%1</b><br>Status: %2<br>Command: %3<br>Cwd: %4<br>Startup: %5")
-                               .arg(task.name.toHtmlEscaped(), task.status.toHtmlEscaped(),
+                               .arg(task.name.toHtmlEscaped(), status.toHtmlEscaped(),
                                     task.command.toHtmlEscaped(), task.cwd.toHtmlEscaped(),
                                     task.startOnLaunch ? QStringLiteral("start when daemon starts")
                                                        : QStringLiteral("manual")));
+    if (!m_daemonConnected) {
+        return;
+    }
     m_startAction->setEnabled(task.status != QStringLiteral("running") && task.status != QStringLiteral("starting"));
     m_stopAction->setEnabled(task.status == QStringLiteral("running") || task.status == QStringLiteral("starting"));
+}
+
+void MainWindow::setDaemonConnected(bool connected) {
+    if (m_daemonConnected == connected) {
+        return;
+    }
+    m_daemonConnected = connected;
+    m_taskModel.setDisconnected(!connected);
+    updateActions();
 }
 
 void MainWindow::ensureDaemonServiceStarted() {

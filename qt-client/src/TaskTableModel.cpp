@@ -24,14 +24,24 @@ QVariant TaskTableModel::data(const QModelIndex &index, int role) const {
         case NameColumn:
             return task.name;
         case StatusColumn:
+            if (m_disconnected) {
+                return QStringLiteral("  disconnected");
+            }
             return QStringLiteral("  %1").arg(task.status);
         case PidColumn:
+            if (m_disconnected) {
+                return {};
+            }
             return task.pid == 0 ? QVariant(QString()) : QVariant(task.pid);
         case CommandColumn:
             return task.command;
         default:
             return {};
         }
+    }
+
+    if (role == Qt::ForegroundRole && m_disconnected) {
+        return QBrush(QColor(132, 139, 148));
     }
 
     if (role == Qt::ForegroundRole && index.column() == StatusColumn) {
@@ -47,6 +57,9 @@ QVariant TaskTableModel::data(const QModelIndex &index, int role) const {
     }
 
     if (role == Qt::DecorationRole && index.column() == StatusColumn) {
+        if (m_disconnected) {
+            return QColor(145, 145, 145);
+        }
         if (task.status == QStringLiteral("running")) {
             return QColor(34, 153, 84);
         }
@@ -89,6 +102,17 @@ void TaskTableModel::setTasks(const QList<Task> &tasks) {
     beginResetModel();
     m_tasks = tasks;
     endResetModel();
+}
+
+void TaskTableModel::setDisconnected(bool disconnected) {
+    if (m_disconnected == disconnected) {
+        return;
+    }
+    m_disconnected = disconnected;
+    if (!m_tasks.isEmpty()) {
+        emit dataChanged(index(0, 0), index(m_tasks.size() - 1, ColumnCount - 1),
+                         {Qt::DisplayRole, Qt::ForegroundRole, Qt::DecorationRole});
+    }
 }
 
 Task TaskTableModel::taskAt(int row) const {

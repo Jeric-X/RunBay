@@ -24,10 +24,11 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
     void setTasks(const QList<Task> &tasks);
+    void setDisconnected(bool disconnected);
     Task taskAt(int row) const;
     QString taskIdAt(int row) const;
 
 private:
     QList<Task> m_tasks;
+    bool m_disconnected = false;
 };
-

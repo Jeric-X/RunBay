@@ -29,6 +29,7 @@ private slots:
     void stopSelectedTask();
     void restartSelectedTask();
     void deleteSelectedTask();
+    void clearLogView();
     void installService();
     void deleteService();
     void startService();
@@ -48,6 +49,7 @@ private:
     QString bundledDaemonPath() const;
     bool installServiceWithDaemon(const QString &daemonPath);
     bool runElevatedPowerShell(const QString &command);
+    void setDaemonConnected(bool connected);
     void setServiceStatus(const QString &message);
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);
     void resizeTaskColumnsToViewport(int viewportWidth);
@@ -74,6 +76,7 @@ private:
     QTextCharFormat m_logFormat;
     bool m_columnsSizedToContents = false;
     bool m_resizingColumns = false;
+    bool m_daemonConnected = true;
     bool m_serviceStartAttempted = false;
     bool m_serviceStatusMessageActive = false;
     int m_lastTableViewportWidth = 0;
