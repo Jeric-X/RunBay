@@ -28,4 +28,5 @@ target_link_libraries(runbay-client PRIVATE Qt6::Widgets Qt6::Network)
 
 if(WIN32)
     set_target_properties(runbay-client PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(runbay-client PRIVATE ole32 uuid)
 endif()

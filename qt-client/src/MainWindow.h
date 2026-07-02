@@ -50,6 +50,7 @@ private:
     QString bundledDaemonPath() const;
     bool installServiceWithDaemon(const QString &daemonPath);
     bool runElevatedPowerShell(const QString &command);
+    void addTaskFromRunnable(const QString &runnablePath);
     void setDaemonConnected(bool connected);
     void setServiceStatus(const QString &message);
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);

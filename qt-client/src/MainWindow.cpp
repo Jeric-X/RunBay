@@ -6,6 +6,9 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -18,6 +21,7 @@
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
 #include <QProcess>
 #include <QScrollBar>
 #include <QSplitter>
@@ -28,12 +32,135 @@
 #include <QTextCursor>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
+
+#ifdef Q_OS_WIN
+#include <objbase.h>
+#include <shobjidl.h>
+#include <windows.h>
+#endif
 
 namespace {
 QString powershellSingleQuoted(QString value) {
     value.replace(QLatin1Char('\''), QStringLiteral("''"));
     return QStringLiteral("'%1'").arg(value);
+}
+
+QString commandQuoted(QString value) {
+    value.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    return QStringLiteral("\"%1\"").arg(value);
+}
+
+QString resolveShortcutTarget(const QString &path) {
+#ifndef Q_OS_WIN
+    return path;
+#else
+    const QFileInfo fileInfo(path);
+    if (fileInfo.suffix().compare(QStringLiteral("lnk"), Qt::CaseInsensitive) != 0) {
+        return path;
+    }
+
+    HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninitialize = SUCCEEDED(initResult);
+    if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) {
+        return path;
+    }
+
+    IShellLinkW *shellLink = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                      reinterpret_cast<void **>(&shellLink));
+    if (FAILED(result) || shellLink == nullptr) {
+        if (shouldUninitialize) {
+            CoUninitialize();
+        }
+        return path;
+    }
+
+    QString targetPath = path;
+    IPersistFile *persistFile = nullptr;
+    result = shellLink->QueryInterface(IID_IPersistFile, reinterpret_cast<void **>(&persistFile));
+    if (SUCCEEDED(result) && persistFile != nullptr) {
+        result = persistFile->Load(reinterpret_cast<LPCOLESTR>(path.utf16()), STGM_READ);
+        if (SUCCEEDED(result)) {
+            wchar_t resolvedPath[MAX_PATH] = {};
+            result = shellLink->GetPath(resolvedPath, MAX_PATH, nullptr, SLGP_UNCPRIORITY);
+            if (SUCCEEDED(result) && resolvedPath[0] != L'\0') {
+                targetPath = QString::fromWCharArray(resolvedPath);
+            }
+        }
+        persistFile->Release();
+    }
+
+    shellLink->Release();
+    if (shouldUninitialize) {
+        CoUninitialize();
+    }
+    return targetPath;
+#endif
+}
+
+bool isRunnableFile(const QFileInfo &fileInfo) {
+    if (!fileInfo.exists() || !fileInfo.isFile()) {
+        return false;
+    }
+
+    const QString suffix = fileInfo.suffix().toLower();
+    static const QStringList runnableSuffixes = {
+        QStringLiteral("bat"),
+        QStringLiteral("cmd"),
+        QStringLiteral("exe"),
+        QStringLiteral("ps1"),
+        QStringLiteral("py"),
+        QStringLiteral("js"),
+        QStringLiteral("mjs"),
+        QStringLiteral("cjs"),
+        QStringLiteral("sh"),
+        QStringLiteral("pl"),
+        QStringLiteral("rb"),
+    };
+    return runnableSuffixes.contains(suffix);
+}
+
+QString runnableCommand(const QFileInfo &fileInfo) {
+    const QString fileName = commandQuoted(fileInfo.fileName());
+    const QString suffix = fileInfo.suffix().toLower();
+    if (suffix == QStringLiteral("py")) {
+        return QStringLiteral("python %1").arg(fileName);
+    }
+    if (suffix == QStringLiteral("ps1")) {
+        return QStringLiteral("powershell.exe -NoProfile -ExecutionPolicy Bypass -File %1").arg(fileName);
+    }
+    if (suffix == QStringLiteral("js") || suffix == QStringLiteral("mjs") || suffix == QStringLiteral("cjs")) {
+        return QStringLiteral("node %1").arg(fileName);
+    }
+    if (suffix == QStringLiteral("sh")) {
+        return QStringLiteral("sh %1").arg(fileName);
+    }
+    if (suffix == QStringLiteral("pl")) {
+        return QStringLiteral("perl %1").arg(fileName);
+    }
+    if (suffix == QStringLiteral("rb")) {
+        return QStringLiteral("ruby %1").arg(fileName);
+    }
+    return fileName;
+}
+
+QString firstDroppedRunnablePath(const QMimeData *mimeData) {
+    if (!mimeData || !mimeData->hasUrls()) {
+        return {};
+    }
+
+    for (const QUrl &url : mimeData->urls()) {
+        if (!url.isLocalFile()) {
+            continue;
+        }
+        const QFileInfo fileInfo(resolveShortcutTarget(url.toLocalFile()));
+        if (isRunnableFile(fileInfo)) {
+            return fileInfo.absoluteFilePath();
+        }
+    }
+    return {};
 }
 
 QColor ansiColor(int index) {
@@ -346,6 +473,8 @@ void MainWindow::buildUi() {
     m_taskView->setModel(&m_proxyModel);
     m_taskView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_taskView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_taskView->setDragDropMode(QAbstractItemView::DropOnly);
+    m_taskView->setDefaultDropAction(Qt::CopyAction);
     m_taskView->setAlternatingRowColors(true);
     m_taskView->setSortingEnabled(true);
     m_taskView->setShowGrid(false);
@@ -372,6 +501,9 @@ void MainWindow::buildUi() {
     m_taskView->setColumnWidth(TaskTableModel::StatusColumn, 110);
     m_taskView->setColumnWidth(TaskTableModel::PidColumn, 80);
     m_taskView->setColumnWidth(TaskTableModel::CommandColumn, 420);
+    m_taskView->setAcceptDrops(true);
+    m_taskView->installEventFilter(this);
+    m_taskView->viewport()->setAcceptDrops(true);
     m_taskView->viewport()->installEventFilter(this);
 
     connect(m_taskView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::onSelectionChanged);
@@ -464,6 +596,37 @@ void MainWindow::refresh() {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    const bool watchedTaskList = watched == m_taskView || watched == m_taskView->viewport();
+    if (!watchedTaskList) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    if (event->type() == QEvent::DragEnter) {
+        auto *dragEvent = static_cast<QDragEnterEvent *>(event);
+        if (!firstDroppedRunnablePath(dragEvent->mimeData()).isEmpty()) {
+            dragEvent->acceptProposedAction();
+            return true;
+        }
+    }
+
+    if (event->type() == QEvent::DragMove) {
+        auto *dragEvent = static_cast<QDragMoveEvent *>(event);
+        if (!firstDroppedRunnablePath(dragEvent->mimeData()).isEmpty()) {
+            dragEvent->acceptProposedAction();
+            return true;
+        }
+    }
+
+    if (event->type() == QEvent::Drop) {
+        auto *dropEvent = static_cast<QDropEvent *>(event);
+        const QString runnablePath = firstDroppedRunnablePath(dropEvent->mimeData());
+        if (!runnablePath.isEmpty()) {
+            dropEvent->acceptProposedAction();
+            addTaskFromRunnable(runnablePath);
+            return true;
+        }
+    }
+
     if (watched == m_taskView->viewport() && event->type() == QEvent::Resize) {
         const int viewportWidth = m_taskView->viewport()->width();
         if (viewportWidth > 0 && viewportWidth != m_lastTableViewportWidth) {
@@ -479,6 +642,22 @@ void MainWindow::addTask() {
     QString name;
     QString command;
     QString cwd;
+    bool startOnLaunch = false;
+    if (!taskEditorDialog(QStringLiteral("Add Task"), nullptr, &name, &command, &cwd, &startOnLaunch)) {
+        return;
+    }
+    m_api.createTask(name, command, cwd, startOnLaunch);
+}
+
+void MainWindow::addTaskFromRunnable(const QString &runnablePath) {
+    const QFileInfo runnableInfo(runnablePath);
+    if (!isRunnableFile(runnableInfo)) {
+        return;
+    }
+
+    QString name = QStringLiteral("run %1").arg(runnableInfo.completeBaseName());
+    QString command = runnableCommand(runnableInfo);
+    QString cwd = runnableInfo.absolutePath();
     bool startOnLaunch = false;
     if (!taskEditorDialog(QStringLiteral("Add Task"), nullptr, &name, &command, &cwd, &startOnLaunch)) {
         return;
@@ -505,6 +684,11 @@ bool MainWindow::taskEditorDialog(const QString &title, const Task *task, QStrin
         commandEdit.setText(task->command);
         cwdEdit.setText(task->cwd);
         startOnLaunchCheck.setChecked(task->startOnLaunch);
+    } else {
+        nameEdit.setText(*name);
+        commandEdit.setText(*command);
+        cwdEdit.setText(*cwd);
+        startOnLaunchCheck.setChecked(*startOnLaunch);
     }
 
     QFormLayout form(&dialog);
