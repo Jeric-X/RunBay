@@ -42,6 +42,9 @@
 #endif
 
 namespace {
+constexpr int kTaskListMinWidth = 330;
+constexpr int kTaskColumnMinWidths[TaskTableModel::ColumnCount] = {96, 76, 44, 96};
+
 QString powershellSingleQuoted(QString value) {
     value.replace(QLatin1Char('\''), QStringLiteral("''"));
     return QStringLiteral("'%1'").arg(value);
@@ -496,7 +499,7 @@ void MainWindow::buildUi() {
     m_taskView->horizontalHeader()->setSectionResizeMode(TaskTableModel::StatusColumn, QHeaderView::Interactive);
     m_taskView->horizontalHeader()->setSectionResizeMode(TaskTableModel::PidColumn, QHeaderView::Interactive);
     m_taskView->horizontalHeader()->setSectionResizeMode(TaskTableModel::CommandColumn, QHeaderView::Interactive);
-    m_taskView->horizontalHeader()->setMinimumSectionSize(56);
+    m_taskView->horizontalHeader()->setMinimumSectionSize(44);
     m_taskView->setColumnWidth(TaskTableModel::NameColumn, 190);
     m_taskView->setColumnWidth(TaskTableModel::StatusColumn, 110);
     m_taskView->setColumnWidth(TaskTableModel::PidColumn, 80);
@@ -547,7 +550,7 @@ void MainWindow::buildUi() {
 
     QFrame *leftPane = new QFrame(this);
     leftPane->setObjectName(QStringLiteral("LeftPane"));
-    leftPane->setMinimumWidth(430);
+    leftPane->setMinimumWidth(kTaskListMinWidth);
     leftPane->setFrameShape(QFrame::NoFrame);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPane);
     leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -572,9 +575,9 @@ void MainWindow::buildUi() {
     splitter->setOpaqueResize(true);
     splitter->addWidget(leftPane);
     splitter->addWidget(rightPane);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 4);
-    splitter->setSizes({620, 560});
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({kTaskListMinWidth, 850});
     connect(splitter, &QSplitter::splitterMoved, this, [this]() {
         const int viewportWidth = m_taskView->viewport()->width();
         if (viewportWidth > 0 && viewportWidth != m_lastTableViewportWidth) {
@@ -999,6 +1002,7 @@ void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
     }
     m_summaryLabel->setText(QStringLiteral("%1 tasks  |  %2 running  |  %3 failed").arg(tasks.size()).arg(running).arg(failed));
 
+    bool restoredSelection = false;
     if (!previous.isEmpty()) {
         for (int row = 0; row < m_taskModel.rowCount(); ++row) {
             if (m_taskModel.taskIdAt(row) == previous) {
@@ -1006,10 +1010,14 @@ void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
                 const QModelIndex proxyIndex = m_proxyModel.mapFromSource(sourceIndex);
                 if (proxyIndex.isValid()) {
                     m_taskView->selectRow(proxyIndex.row());
+                    restoredSelection = true;
                 }
                 break;
             }
         }
+    }
+    if (!restoredSelection && previous.isEmpty() && m_proxyModel.rowCount() > 0) {
+        m_taskView->selectRow(0);
     }
 
     updateActions();
@@ -1151,7 +1159,6 @@ void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {
     }
 
     constexpr int columnCount = TaskTableModel::ColumnCount;
-    const int minWidths[columnCount] = {110, 82, 60, 160};
     int widths[columnCount] = {
         m_taskView->columnWidth(TaskTableModel::NameColumn),
         m_taskView->columnWidth(TaskTableModel::StatusColumn),
@@ -1162,16 +1169,16 @@ void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {
     int totalWidth = 0;
     int minimumTotalWidth = 0;
     for (int column = 0; column < columnCount; ++column) {
-        widths[column] = qMax(widths[column], minWidths[column]);
+        widths[column] = qMax(widths[column], kTaskColumnMinWidths[column]);
         totalWidth += widths[column];
-        minimumTotalWidth += minWidths[column];
+        minimumTotalWidth += kTaskColumnMinWidths[column];
     }
 
     const int targetWidth = qMax(viewportWidth, minimumTotalWidth);
     int newWidths[columnCount] = {};
     int newTotalWidth = 0;
     for (int column = 0; column < columnCount; ++column) {
-        newWidths[column] = qMax(minWidths[column], qRound(widths[column] * (double(targetWidth) / totalWidth)));
+        newWidths[column] = qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(targetWidth) / totalWidth)));
         newTotalWidth += newWidths[column];
     }
 
@@ -1183,7 +1190,7 @@ void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {
                 ++newWidths[column];
                 --delta;
                 changed = true;
-            } else if (newWidths[column] > minWidths[column]) {
+            } else if (newWidths[column] > kTaskColumnMinWidths[column]) {
                 --newWidths[column];
                 ++delta;
                 changed = true;
@@ -1207,9 +1214,9 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
     }
 
     constexpr int columnCount = TaskTableModel::ColumnCount;
-    const int minWidths[columnCount] = {110, 82, 60, 160};
     const int targetWidth = qMax(m_taskView->viewport()->width(),
-                                 minWidths[0] + minWidths[1] + minWidths[2] + minWidths[3]);
+                                 kTaskColumnMinWidths[0] + kTaskColumnMinWidths[1] + kTaskColumnMinWidths[2] +
+                                     kTaskColumnMinWidths[3]);
     int widths[columnCount] = {
         m_taskView->columnWidth(TaskTableModel::NameColumn),
         m_taskView->columnWidth(TaskTableModel::StatusColumn),
@@ -1217,7 +1224,7 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
         m_taskView->columnWidth(TaskTableModel::CommandColumn),
     };
     for (int column = 0; column < columnCount; ++column) {
-        widths[column] = qMax(widths[column], minWidths[column]);
+        widths[column] = qMax(widths[column], kTaskColumnMinWidths[column]);
     }
 
     int fixedWidth = 0;
@@ -1228,7 +1235,7 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
     int trailingMinimumWidth = 0;
     int trailingCurrentWidth = 0;
     for (int column = resizedColumn + 1; column < columnCount; ++column) {
-        trailingMinimumWidth += minWidths[column];
+        trailingMinimumWidth += kTaskColumnMinWidths[column];
         trailingCurrentWidth += widths[column];
     }
 
@@ -1237,22 +1244,22 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
         for (int column = 0; column < resizedColumn; ++column) {
             previousWidth += widths[column];
         }
-        widths[resizedColumn] = qMax(minWidths[resizedColumn], targetWidth - previousWidth);
+        widths[resizedColumn] = qMax(kTaskColumnMinWidths[resizedColumn], targetWidth - previousWidth);
     } else if (fixedWidth + trailingMinimumWidth > targetWidth) {
         int availableForFixed = targetWidth - trailingMinimumWidth;
         for (int column = resizedColumn; column >= 0 && fixedWidth > availableForFixed; --column) {
-            const int shrink = qMin(widths[column] - minWidths[column], fixedWidth - availableForFixed);
+            const int shrink = qMin(widths[column] - kTaskColumnMinWidths[column], fixedWidth - availableForFixed);
             widths[column] -= shrink;
             fixedWidth -= shrink;
         }
         for (int column = resizedColumn + 1; column < columnCount; ++column) {
-            widths[column] = minWidths[column];
+            widths[column] = kTaskColumnMinWidths[column];
         }
     } else {
         int remainingWidth = targetWidth - fixedWidth;
         int trailingTotalWidth = 0;
         for (int column = resizedColumn + 1; column < columnCount; ++column) {
-            widths[column] = qMax(minWidths[column], qRound(widths[column] * (double(remainingWidth) / trailingCurrentWidth)));
+            widths[column] = qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(remainingWidth) / trailingCurrentWidth)));
             trailingTotalWidth += widths[column];
         }
 
@@ -1264,7 +1271,7 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
                     ++widths[column];
                     --delta;
                     changed = true;
-                } else if (widths[column] > minWidths[column]) {
+                } else if (widths[column] > kTaskColumnMinWidths[column]) {
                     --widths[column];
                     ++delta;
                     changed = true;
