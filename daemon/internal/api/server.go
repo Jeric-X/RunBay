@@ -1,11 +1,14 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"runbay/daemon/internal/process"
 	"runbay/daemon/internal/store"
@@ -13,12 +16,13 @@ import (
 )
 
 type Server struct {
-	store   *store.MemoryStore
-	manager *process.Manager
+	store      *store.MemoryStore
+	manager    *process.Manager
+	instanceID string
 }
 
 func NewServer(store *store.MemoryStore, manager *process.Manager) *Server {
-	return &Server{store: store, manager: manager}
+	return &Server{store: store, manager: manager, instanceID: newInstanceID()}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -30,7 +34,10 @@ func (s *Server) Routes() http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "ok",
+		"instance_id": s.instanceID,
+	})
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +174,16 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, id string) {
 		writeStoreError(w, err)
 		return
 	}
+	logs.InstanceID = s.instanceID
 	writeJSON(w, http.StatusOK, logs)
+}
+
+func newInstanceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return hex.EncodeToString([]byte(time.Now().UTC().Format("20060102150405.000000000")))
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

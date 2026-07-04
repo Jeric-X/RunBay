@@ -48,7 +48,7 @@ private slots:
     void onTaskHeaderSectionResized(int logicalIndex, int oldSize, int newSize);
     void onSelectionChanged();
     void onTasksLoaded(const QList<Task> &tasks);
-    void onLogsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
+    void onLogsLoaded(const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
 
 private:
     QString selectedTaskId() const;
@@ -65,6 +65,9 @@ private:
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);
     void restoreUiState();
     void saveUiState() const;
+    quint64 clearedLogEntryId(const QString &taskId) const;
+    void saveClearedLogEntryId(const QString &taskId, quint64 entryId) const;
+    quint64 nextLogRequestAfter(const QString &taskId) const;
     void resizeTaskColumnsToViewport(int viewportWidth);
     void resizeTrailingTaskColumnsToViewport(int resizedColumn);
 
@@ -85,6 +88,7 @@ private:
     QAction *m_deleteAction = nullptr;
     QTimer m_refreshTimer;
     QTimer m_logTimer;
+    QString m_serverInstanceId;
     QString m_loadedLogTaskId;
     quint64 m_lastLogEntryId = 0;
     QTextCharFormat m_logFormat;

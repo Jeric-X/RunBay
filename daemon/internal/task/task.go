@@ -54,9 +54,10 @@ type LogEntry struct {
 }
 
 type LogResponse struct {
-	TaskID    string     `json:"task_id"`
-	StartID   uint64     `json:"start_id"`
-	EndID     uint64     `json:"end_id"`
-	Truncated bool       `json:"truncated"`
-	Entries   []LogEntry `json:"entries"`
+	TaskID     string     `json:"task_id"`
+	InstanceID string     `json:"instance_id,omitempty"`
+	StartID    uint64     `json:"start_id"`
+	EndID      uint64     `json:"end_id"`
+	Truncated  bool       `json:"truncated"`
+	Entries    []LogEntry `json:"entries"`
 }

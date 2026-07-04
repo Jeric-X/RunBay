@@ -28,10 +28,10 @@ public:
     void health();
 
 signals:
-    void healthChanged(bool ok);
+    void healthChanged(bool ok, const QString &instanceId);
     void tasksLoaded(const QList<Task> &tasks);
     void taskUpdated(const Task &task);
-    void logsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
+    void logsLoaded(const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
     void errorOccurred(const QString &message);
 
 private:

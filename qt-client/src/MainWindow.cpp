@@ -72,8 +72,20 @@ QString settingsFilePath() {
     return QDir(appDataDirectoryPath()).filePath(QStringLiteral("settings.ini"));
 }
 
+QString logClearsFilePath() {
+    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("log-clears.ini"));
+}
+
 QSettings appSettings() {
     return QSettings(settingsFilePath(), QSettings::IniFormat);
+}
+
+QSettings logClearsSettings() {
+    return QSettings(logClearsFilePath(), QSettings::IniFormat);
+}
+
+QString logClearPointKey(const QString &instanceId, const QString &taskId) {
+    return QStringLiteral("%1/%2").arg(instanceId, taskId);
 }
 
 QString powershellSingleQuoted(QString value) {
@@ -446,15 +458,26 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(&m_api, &ApiClient::errorOccurred, this, [this](const QString &message) {
         statusBar()->showMessage(message, 5000);
     });
-    connect(&m_api, &ApiClient::healthChanged, this, [this](bool ok) {
+    connect(&m_api, &ApiClient::healthChanged, this, [this](bool ok, const QString &instanceId) {
         setDaemonConnected(ok);
         if (ok) {
+            if (!instanceId.isEmpty() && instanceId != m_serverInstanceId) {
+                m_serverInstanceId = instanceId;
+                m_loadedLogTaskId.clear();
+                m_lastLogEntryId = 0;
+                m_logFormat = QTextCharFormat();
+                if (m_logView) {
+                    m_logView->clear();
+                }
+            }
             m_serviceStartAttempted = false;
             m_serviceStatusMessageActive = false;
             m_connectionLabel->setText(QStringLiteral("Connected: 127.0.0.1:8732"));
         } else if (!m_serviceStartAttempted) {
+            m_serverInstanceId.clear();
             ensureDaemonServiceStarted();
         } else if (!m_serviceStatusMessageActive) {
+            m_serverInstanceId.clear();
             m_connectionLabel->setText(QStringLiteral("Disconnected"));
         }
     });
@@ -466,7 +489,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         const QString id = selectedTaskId();
         if (!id.isEmpty()) {
-            m_api.fetchLogs(id, id == m_loadedLogTaskId ? m_lastLogEntryId : 0);
+            m_api.fetchLogs(id, nextLogRequestAfter(id));
         }
     });
 
@@ -870,6 +893,10 @@ void MainWindow::deleteSelectedTask() {
 }
 
 void MainWindow::clearLogView() {
+    const QString id = selectedTaskId();
+    if (!id.isEmpty() && !m_serverInstanceId.isEmpty() && m_lastLogEntryId > 0) {
+        saveClearedLogEntryId(id, m_lastLogEntryId);
+    }
     m_logView->clear();
     m_logFormat = QTextCharFormat();
 }
@@ -1066,11 +1093,11 @@ void MainWindow::onSelectionChanged() {
     if (!id.isEmpty()) {
         if (id != m_loadedLogTaskId) {
             m_loadedLogTaskId = id;
-            m_lastLogEntryId = 0;
+            m_lastLogEntryId = clearedLogEntryId(id);
             m_logFormat = QTextCharFormat();
             m_logView->clear();
         }
-        m_api.fetchLogs(id);
+        m_api.fetchLogs(id, nextLogRequestAfter(id));
     } else {
         m_loadedLogTaskId.clear();
         m_lastLogEntryId = 0;
@@ -1133,12 +1160,19 @@ void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
     updateActions();
 }
 
-void MainWindow::onLogsLoaded(const QString &taskId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated) {
+void MainWindow::onLogsLoaded(const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated) {
     if (taskId != selectedTaskId()) {
         return;
     }
 
-    const bool resetLog = taskId != m_loadedLogTaskId || truncated;
+    const bool instanceChanged = !instanceId.isEmpty() && instanceId != m_serverInstanceId;
+    if (instanceChanged) {
+        m_serverInstanceId = instanceId;
+        m_loadedLogTaskId.clear();
+        m_lastLogEntryId = clearedLogEntryId(taskId);
+    }
+
+    const bool resetLog = instanceChanged || taskId != m_loadedLogTaskId || truncated;
     QList<LogEntry> newEntries;
     for (const LogEntry &entry : entries) {
         if (resetLog || entry.id > m_lastLogEntryId) {
@@ -1330,6 +1364,36 @@ void MainWindow::saveUiState() const {
     }
 
     settings.sync();
+}
+
+quint64 MainWindow::clearedLogEntryId(const QString &taskId) const {
+    if (m_serverInstanceId.isEmpty() || taskId.isEmpty()) {
+        return 0;
+    }
+    QSettings settings = logClearsSettings();
+    settings.beginGroup(QStringLiteral("clearPoints"));
+    const quint64 entryId = settings.value(logClearPointKey(m_serverInstanceId, taskId), 0).toULongLong();
+    settings.endGroup();
+    return entryId;
+}
+
+void MainWindow::saveClearedLogEntryId(const QString &taskId, quint64 entryId) const {
+    if (m_serverInstanceId.isEmpty() || taskId.isEmpty() || entryId == 0) {
+        return;
+    }
+    QSettings settings = logClearsSettings();
+    settings.beginGroup(QStringLiteral("clearPoints"));
+    settings.setValue(logClearPointKey(m_serverInstanceId, taskId), entryId);
+    settings.endGroup();
+    settings.sync();
+}
+
+quint64 MainWindow::nextLogRequestAfter(const QString &taskId) const {
+    const quint64 clearPoint = clearedLogEntryId(taskId);
+    if (taskId == m_loadedLogTaskId) {
+        return qMax(m_lastLogEntryId, clearPoint);
+    }
+    return clearPoint;
 }
 
 void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {

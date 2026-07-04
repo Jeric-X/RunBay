@@ -22,9 +22,11 @@ void ApiClient::health() {
     req.setTransferTimeout(1500);
     QNetworkReply *reply = m_network.get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray body = reply->readAll();
         const bool ok = reply->error() == QNetworkReply::NoError;
+        const QString instanceId = ok ? QJsonDocument::fromJson(body).object().value(QStringLiteral("instance_id")).toString() : QString();
         reply->deleteLater();
-        emit healthChanged(ok);
+        emit healthChanged(ok, instanceId);
     });
 }
 
@@ -126,8 +128,9 @@ void ApiClient::fetchLogs(const QString &id, quint64 after, int tail) {
         const quint64 startId = object.value(QStringLiteral("start_id")).toVariant().toULongLong();
         const quint64 endId = object.value(QStringLiteral("end_id")).toVariant().toULongLong();
         const bool truncated = object.value(QStringLiteral("truncated")).toBool();
+        const QString instanceId = object.value(QStringLiteral("instance_id")).toString();
         reply->deleteLater();
-        emit logsLoaded(id, entries, startId, endId, truncated);
+        emit logsLoaded(id, instanceId, entries, startId, endId, truncated);
     });
 }
 
