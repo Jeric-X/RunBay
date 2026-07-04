@@ -2,13 +2,16 @@
 
 #include <QAction>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDesktopServices>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -22,10 +25,15 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMimeData>
+#include <QPainter>
+#include <QPixmap>
 #include <QProcess>
+#include <QResizeEvent>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStandardPaths>
 #include <QStyle>
 #include <QStringList>
 #include <QTextCharFormat>
@@ -44,10 +52,55 @@
 namespace {
 constexpr int kTaskListMinWidth = 330;
 constexpr int kTaskColumnMinWidths[TaskTableModel::ColumnCount] = {96, 76, 44, 96};
+const QSize kDefaultWindowSize(1180, 760);
+
+QString appDataDirectoryPath() {
+#ifdef Q_OS_WIN
+    const QString roamingRoot = qEnvironmentVariable("APPDATA");
+    const QString dataPath = roamingRoot.isEmpty() ? QDir::home().filePath(QStringLiteral(".runbay"))
+                                                   : QDir(roamingRoot).filePath(QStringLiteral("RunBay"));
+#else
+    const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString dataPath = dataRoot.isEmpty() ? QDir::home().filePath(QStringLiteral(".runbay"))
+                                                : QDir(dataRoot).filePath(QStringLiteral("RunBay"));
+#endif
+    QDir().mkpath(dataPath);
+    return dataPath;
+}
+
+QString settingsFilePath() {
+    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("settings.ini"));
+}
+
+QSettings appSettings() {
+    return QSettings(settingsFilePath(), QSettings::IniFormat);
+}
 
 QString powershellSingleQuoted(QString value) {
     value.replace(QLatin1Char('\''), QStringLiteral("''"));
     return QStringLiteral("'%1'").arg(value);
+}
+
+QIcon logJumpIcon(bool top) {
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(QStringLiteral("#52616f")), 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+
+    if (top) {
+        painter.drawLine(QPointF(7, 6), QPointF(17, 6));
+        painter.drawLine(QPointF(12, 18), QPointF(12, 10));
+        painter.drawPolyline(QPolygonF({QPointF(8, 13), QPointF(12, 9), QPointF(16, 13)}));
+    } else {
+        painter.drawLine(QPointF(7, 18), QPointF(17, 18));
+        painter.drawLine(QPointF(12, 6), QPointF(12, 14));
+        painter.drawPolyline(QPolygonF({QPointF(8, 11), QPointF(12, 15), QPointF(16, 11)}));
+    }
+
+    return QIcon(pixmap);
 }
 
 QString commandQuoted(QString value) {
@@ -425,9 +478,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
 void MainWindow::buildUi() {
     setWindowTitle(QStringLiteral("RunBay"));
-    resize(1180, 760);
+    resize(kDefaultWindowSize);
     setMinimumSize(920, 560);
     applyStyle();
+
+    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("File"));
+    QAction *openDataDirectoryAction = fileMenu->addAction(QStringLiteral("Open Data Directory"));
+    connect(openDataDirectoryAction, &QAction::triggered, this, &MainWindow::openDataDirectory);
 
     QMenu *serviceMenu = menuBar()->addMenu(QStringLiteral("Service"));
     QAction *installServiceAction = serviceMenu->addAction(QStringLiteral("Install Service"));
@@ -531,6 +588,18 @@ void MainWindow::buildUi() {
     clearLogButton->setAutoRaise(true);
     connect(clearLogButton, &QToolButton::clicked, this, &MainWindow::clearLogView);
 
+    QToolButton *scrollLogTopButton = new QToolButton(this);
+    scrollLogTopButton->setIcon(logJumpIcon(true));
+    scrollLogTopButton->setToolTip(QStringLiteral("Go to top"));
+    scrollLogTopButton->setAutoRaise(true);
+    connect(scrollLogTopButton, &QToolButton::clicked, this, &MainWindow::scrollLogToTop);
+
+    QToolButton *scrollLogBottomButton = new QToolButton(this);
+    scrollLogBottomButton->setIcon(logJumpIcon(false));
+    scrollLogBottomButton->setToolTip(QStringLiteral("Go to bottom"));
+    scrollLogBottomButton->setAutoRaise(true);
+    connect(scrollLogBottomButton, &QToolButton::clicked, this, &MainWindow::scrollLogToBottom);
+
     QFrame *logToolbar = new QFrame(this);
     logToolbar->setFrameShape(QFrame::NoFrame);
     QHBoxLayout *logToolbarLayout = new QHBoxLayout(logToolbar);
@@ -538,6 +607,8 @@ void MainWindow::buildUi() {
     logToolbarLayout->setSpacing(6);
     logToolbarLayout->addWidget(m_logTitleLabel);
     logToolbarLayout->addStretch(1);
+    logToolbarLayout->addWidget(scrollLogTopButton);
+    logToolbarLayout->addWidget(scrollLogBottomButton);
     logToolbarLayout->addWidget(clearLogButton);
 
     m_logView = new QPlainTextEdit(this);
@@ -569,23 +640,25 @@ void MainWindow::buildUi() {
     rightLayout->addWidget(logToolbar);
     rightLayout->addWidget(m_logView, 1);
 
-    QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setChildrenCollapsible(false);
-    splitter->setHandleWidth(8);
-    splitter->setOpaqueResize(true);
-    splitter->addWidget(leftPane);
-    splitter->addWidget(rightPane);
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({kTaskListMinWidth, 850});
-    connect(splitter, &QSplitter::splitterMoved, this, [this]() {
+    m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setHandleWidth(8);
+    m_splitter->setOpaqueResize(true);
+    m_splitter->addWidget(leftPane);
+    m_splitter->addWidget(rightPane);
+    m_splitter->setStretchFactor(0, 0);
+    m_splitter->setStretchFactor(1, 1);
+    m_splitter->setSizes({kTaskListMinWidth, 850});
+    connect(m_splitter, &QSplitter::splitterMoved, this, [this]() {
         const int viewportWidth = m_taskView->viewport()->width();
         if (viewportWidth > 0 && viewportWidth != m_lastTableViewportWidth) {
             resizeTaskColumnsToViewport(viewportWidth);
             m_lastTableViewportWidth = viewportWidth;
         }
+        saveUiState();
     });
-    setCentralWidget(splitter);
+    setCentralWidget(m_splitter);
+    restoreUiState();
 
     m_connectionLabel = new QLabel(QStringLiteral("Checking daemon..."), this);
     statusBar()->addPermanentWidget(m_connectionLabel);
@@ -596,6 +669,11 @@ void MainWindow::buildUi() {
 void MainWindow::refresh() {
     m_api.health();
     m_api.listTasks();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    saveUiState();
+    QMainWindow::closeEvent(event);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
@@ -634,11 +712,20 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         const int viewportWidth = m_taskView->viewport()->width();
         if (viewportWidth > 0 && viewportWidth != m_lastTableViewportWidth) {
             resizeTaskColumnsToViewport(viewportWidth);
+            saveUiState();
         }
         m_lastTableViewportWidth = viewportWidth;
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event) {
+    QMainWindow::resizeEvent(event);
+    if (!event->oldSize().isValid() || event->size() == event->oldSize()) {
+        return;
+    }
+    saveUiState();
 }
 
 void MainWindow::addTask() {
@@ -748,6 +835,7 @@ void MainWindow::onTaskHeaderSectionResized(int logicalIndex, int oldSize, int n
         return;
     }
     resizeTrailingTaskColumnsToViewport(logicalIndex);
+    saveUiState();
 }
 
 void MainWindow::startSelectedTask() {
@@ -784,6 +872,28 @@ void MainWindow::deleteSelectedTask() {
 void MainWindow::clearLogView() {
     m_logView->clear();
     m_logFormat = QTextCharFormat();
+}
+
+void MainWindow::scrollLogToTop() {
+    if (!m_logView) {
+        return;
+    }
+    m_logView->moveCursor(QTextCursor::Start);
+    m_logView->verticalScrollBar()->setValue(m_logView->verticalScrollBar()->minimum());
+    m_logView->setFocus();
+}
+
+void MainWindow::scrollLogToBottom() {
+    if (!m_logView) {
+        return;
+    }
+    m_logView->moveCursor(QTextCursor::End);
+    m_logView->verticalScrollBar()->setValue(m_logView->verticalScrollBar()->maximum());
+    m_logView->setFocus();
+}
+
+void MainWindow::openDataDirectory() {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(appDataDirectoryPath()));
 }
 
 void MainWindow::installService() {
@@ -1151,6 +1261,75 @@ void MainWindow::setServiceStatus(const QString &message) {
     m_serviceStatusMessageActive = true;
     m_connectionLabel->setText(message);
     statusBar()->showMessage(message, 5000);
+}
+
+void MainWindow::restoreUiState() {
+    QSettings settings = appSettings();
+
+    const int savedWindowWidth = settings.value(QStringLiteral("window/width"), 0).toInt();
+    const int savedWindowHeight = settings.value(QStringLiteral("window/height"), 0).toInt();
+    if (savedWindowWidth > 0 && savedWindowHeight > 0) {
+        resize(QSize(savedWindowWidth, savedWindowHeight).expandedTo(minimumSize()));
+    }
+
+    if (m_splitter) {
+        const int leftWidth = settings.value(QStringLiteral("splitter/leftWidth"), 0).toInt();
+        const int rightWidth = settings.value(QStringLiteral("splitter/rightWidth"), 0).toInt();
+        if (leftWidth >= kTaskListMinWidth && rightWidth > 0) {
+            m_splitter->setSizes({leftWidth, rightWidth});
+        }
+    }
+
+    if (!m_taskView) {
+        return;
+    }
+
+    const int savedColumnWidths[TaskTableModel::ColumnCount] = {
+        settings.value(QStringLiteral("taskList/nameWidth"), 0).toInt(),
+        settings.value(QStringLiteral("taskList/statusWidth"), 0).toInt(),
+        settings.value(QStringLiteral("taskList/pidWidth"), 0).toInt(),
+        settings.value(QStringLiteral("taskList/commandWidth"), 0).toInt(),
+    };
+    bool hasSavedColumnWidths = true;
+    for (int column = 0; column < TaskTableModel::ColumnCount; ++column) {
+        if (savedColumnWidths[column] <= 0) {
+            hasSavedColumnWidths = false;
+            break;
+        }
+    }
+    if (hasSavedColumnWidths) {
+        m_resizingColumns = true;
+        for (int column = 0; column < TaskTableModel::ColumnCount; ++column) {
+            m_taskView->setColumnWidth(column, qMax(kTaskColumnMinWidths[column], savedColumnWidths[column]));
+        }
+        m_resizingColumns = false;
+        m_columnsSizedToContents = true;
+    }
+
+    m_lastTableViewportWidth = m_taskView->viewport()->width();
+}
+
+void MainWindow::saveUiState() const {
+    QSettings settings = appSettings();
+    settings.setValue(QStringLiteral("window/width"), width());
+    settings.setValue(QStringLiteral("window/height"), height());
+
+    if (m_splitter) {
+        const QList<int> splitterSizes = m_splitter->sizes();
+        if (splitterSizes.size() >= 2) {
+            settings.setValue(QStringLiteral("splitter/leftWidth"), splitterSizes.at(0));
+            settings.setValue(QStringLiteral("splitter/rightWidth"), splitterSizes.at(1));
+        }
+    }
+
+    if (m_taskView) {
+        settings.setValue(QStringLiteral("taskList/nameWidth"), m_taskView->columnWidth(TaskTableModel::NameColumn));
+        settings.setValue(QStringLiteral("taskList/statusWidth"), m_taskView->columnWidth(TaskTableModel::StatusColumn));
+        settings.setValue(QStringLiteral("taskList/pidWidth"), m_taskView->columnWidth(TaskTableModel::PidColumn));
+        settings.setValue(QStringLiteral("taskList/commandWidth"), m_taskView->columnWidth(TaskTableModel::CommandColumn));
+    }
+
+    settings.sync();
 }
 
 void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {

@@ -14,6 +14,10 @@
 #include <QTextCharFormat>
 #include <QTimer>
 
+class QCloseEvent;
+class QResizeEvent;
+class QSplitter;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -21,7 +25,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
 
 protected:
+    void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private slots:
     void refresh();
@@ -31,6 +37,9 @@ private slots:
     void restartSelectedTask();
     void deleteSelectedTask();
     void clearLogView();
+    void scrollLogToTop();
+    void scrollLogToBottom();
+    void openDataDirectory();
     void installService();
     void deleteService();
     void startService();
@@ -54,6 +63,8 @@ private:
     void setDaemonConnected(bool connected);
     void setServiceStatus(const QString &message);
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);
+    void restoreUiState();
+    void saveUiState() const;
     void resizeTaskColumnsToViewport(int viewportWidth);
     void resizeTrailingTaskColumnsToViewport(int resizedColumn);
 
@@ -67,6 +78,7 @@ private:
     QLabel *m_summaryLabel = nullptr;
     QLabel *m_logTitleLabel = nullptr;
     QLineEdit *m_searchEdit = nullptr;
+    QSplitter *m_splitter = nullptr;
     QAction *m_startAction = nullptr;
     QAction *m_stopAction = nullptr;
     QAction *m_restartAction = nullptr;
