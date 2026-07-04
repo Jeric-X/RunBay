@@ -1421,7 +1421,8 @@ void MainWindow::resizeTaskColumnsToViewport(int viewportWidth) {
     int newWidths[columnCount] = {};
     int newTotalWidth = 0;
     for (int column = 0; column < columnCount; ++column) {
-        newWidths[column] = qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(targetWidth) / totalWidth)));
+        newWidths[column] =
+            qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(targetWidth) / totalWidth)));
         newTotalWidth += newWidths[column];
     }
 
@@ -1502,7 +1503,8 @@ void MainWindow::resizeTrailingTaskColumnsToViewport(int resizedColumn) {
         int remainingWidth = targetWidth - fixedWidth;
         int trailingTotalWidth = 0;
         for (int column = resizedColumn + 1; column < columnCount; ++column) {
-            widths[column] = qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(remainingWidth) / trailingCurrentWidth)));
+            widths[column] =
+                qMax(kTaskColumnMinWidths[column], qRound(widths[column] * (double(remainingWidth) / trailingCurrentWidth)));
             trailingTotalWidth += widths[column];
         }
 

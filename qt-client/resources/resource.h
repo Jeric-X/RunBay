@@ -1,0 +1,6 @@
+#ifndef RUNBAY_RESOURCE_H
+#define RUNBAY_RESOURCE_H
+
+#define IDI_RUNBAY_APP_ICON 101
+
+#endif

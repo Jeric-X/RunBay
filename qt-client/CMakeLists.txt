@@ -22,11 +22,13 @@ qt_add_executable(runbay-client
     src/Task.h
     src/TaskTableModel.cpp
     src/TaskTableModel.h
+    resources/runbay.qrc
 )
 
 target_link_libraries(runbay-client PRIVATE Qt6::Widgets Qt6::Network)
 
 if(WIN32)
+    target_sources(runbay-client PRIVATE resources/runbay.rc)
     set_target_properties(runbay-client PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(runbay-client PRIVATE ole32 uuid)
 endif()
