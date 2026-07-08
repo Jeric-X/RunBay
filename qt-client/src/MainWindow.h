@@ -3,13 +3,17 @@
 #include "ApiClient.h"
 #include "TaskTableModel.h"
 
+#include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
 #include <QMainWindow>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSortFilterProxyModel>
 #include <QStringList>
+#include <QStackedWidget>
+#include <QTabBar>
 #include <QTableView>
 #include <QTextCharFormat>
 #include <QTimer>
@@ -32,6 +36,8 @@ protected:
 private slots:
     void refresh();
     void addTask();
+    void importTasks();
+    void exportTasks();
     void startSelectedTask();
     void stopSelectedTask();
     void restartSelectedTask();
@@ -40,6 +46,9 @@ private slots:
     void scrollLogToTop();
     void scrollLogToBottom();
     void openDataDirectory();
+    void addServer();
+    void deleteCurrentServer();
+    void onServerTabChanged(int index);
     void installService();
     void deleteService();
     void startService();
@@ -47,8 +56,8 @@ private slots:
     void editTaskAt(const QModelIndex &index);
     void onTaskHeaderSectionResized(int logicalIndex, int oldSize, int newSize);
     void onSelectionChanged();
-    void onTasksLoaded(const QList<Task> &tasks);
-    void onLogsLoaded(const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
+    void onTasksLoaded(int context, const QList<Task> &tasks);
+    void onLogsLoaded(int context, const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated);
 
 private:
     QString selectedTaskId() const;
@@ -62,6 +71,13 @@ private:
     void addTaskFromRunnable(const QString &runnablePath);
     void setDaemonConnected(bool connected);
     void setServiceStatus(const QString &message);
+    void loadServerSettings();
+    void saveServerSettings() const;
+    void setCurrentServer(int index);
+    void updateServerTabs();
+    void updateServerEmptyState();
+    QString currentServerUrl() const;
+    QString currentServerName() const;
     bool taskEditorDialog(const QString &title, const Task *task, QString *name, QString *command, QString *cwd, bool *startOnLaunch);
     void restoreUiState();
     void saveUiState() const;
@@ -82,14 +98,22 @@ private:
     QLabel *m_logTitleLabel = nullptr;
     QLineEdit *m_searchEdit = nullptr;
     QSplitter *m_splitter = nullptr;
+    QStackedWidget *m_contentStack = nullptr;
+    QPushButton *m_emptyServerButton = nullptr;
+    QTabBar *m_serverTabs = nullptr;
     QAction *m_startAction = nullptr;
     QAction *m_stopAction = nullptr;
     QAction *m_restartAction = nullptr;
     QAction *m_deleteAction = nullptr;
     QTimer m_refreshTimer;
     QTimer m_logTimer;
+    QStringList m_serverNames;
+    QStringList m_serverUrls;
+    int m_currentServerIndex = -1;
+    int m_serverRequestContext = 0;
     QString m_serverInstanceId;
     QString m_loadedLogTaskId;
+    QJsonArray m_pendingImportFailures;
     quint64 m_lastLogEntryId = 0;
     QTextCharFormat m_logFormat;
     bool m_columnsSizedToContents = false;

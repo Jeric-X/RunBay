@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 var ErrNotFound = errors.New("task not found")
+var ErrNameConflict = errors.New("task name already exists")
 
 type MemoryStore struct {
 	mu       sync.RWMutex
@@ -69,6 +71,10 @@ func (s *MemoryStore) Create(req task.CreateRequest) (*task.Task, error) {
 	}
 
 	s.mu.Lock()
+	if s.nameExistsLocked(t.Name, "") {
+		s.mu.Unlock()
+		return nil, ErrNameConflict
+	}
 	s.tasks[t.ID] = cloneTask(t)
 	s.logs[t.ID] = []task.LogEntry{s.newLogEntryLocked(t.ID, createdLine)}
 	if err := s.saveLocked(); err != nil {
@@ -114,12 +120,27 @@ func (s *MemoryStore) Update(t *task.Task) error {
 	if _, ok := s.tasks[t.ID]; !ok {
 		return ErrNotFound
 	}
+	if s.nameExistsLocked(t.Name, t.ID) {
+		return ErrNameConflict
+	}
 	t.UpdatedAt = time.Now().UTC()
 	s.tasks[t.ID] = cloneTask(t)
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (s *MemoryStore) nameExistsLocked(name, excludeID string) bool {
+	for id, t := range s.tasks {
+		if id == excludeID {
+			continue
+		}
+		if strings.EqualFold(t.Name, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryStore) Delete(id string) error {

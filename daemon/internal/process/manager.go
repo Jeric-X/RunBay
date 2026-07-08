@@ -17,6 +17,11 @@ import (
 
 var ErrAlreadyRunning = errors.New("task is already running")
 
+const (
+	defaultTerminalColumns = "160"
+	defaultTerminalLines   = "40"
+)
+
 type Manager struct {
 	mu      sync.Mutex
 	store   *store.MemoryStore
@@ -239,6 +244,12 @@ func envPairs(env map[string]string) []string {
 
 func processEnv(taskEnv map[string]string) []string {
 	env := os.Environ()
+	if _, ok := os.LookupEnv("COLUMNS"); !ok {
+		env = append(env, "COLUMNS="+defaultTerminalColumns)
+	}
+	if _, ok := os.LookupEnv("LINES"); !ok {
+		env = append(env, "LINES="+defaultTerminalLines)
+	}
 	if runtime.GOOS == "windows" {
 		env = append(env,
 			"PYTHONUTF8=1",

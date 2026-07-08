@@ -13,6 +13,7 @@
 #include <QDropEvent>
 #include <QDir>
 #include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -20,7 +21,9 @@
 #include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
-#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
@@ -28,13 +31,17 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QTabBar>
 #include <QStringList>
 #include <QTextCharFormat>
 #include <QTextCursor>
@@ -42,6 +49,8 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <yaml-cpp/yaml.h>
 
 #ifdef Q_OS_WIN
 #include <objbase.h>
@@ -69,15 +78,65 @@ QString appDataDirectoryPath() {
 }
 
 QString settingsFilePath() {
-    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("settings.ini"));
+    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("settings.yml"));
+}
+
+QString serverConfigFilePath() {
+    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("servers.yml"));
+}
+
+QString normalizedServerUrl(QString value) {
+    value = value.trimmed();
+    if (value.isEmpty()) {
+        return {};
+    }
+    if (!value.contains(QStringLiteral("://"))) {
+        value.prepend(QStringLiteral("http://"));
+    }
+
+    QUrl url(value);
+    if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()) {
+        return {};
+    }
+    if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {
+        return {};
+    }
+
+    url.setPath(QString());
+    QString text = url.toString(QUrl::RemoveUserInfo | QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash);
+    while (text.endsWith(QLatin1Char('/'))) {
+        text.chop(1);
+    }
+    return text;
+}
+
+QString serverTabTitle(const QString &serverUrl) {
+    const QUrl url(serverUrl);
+    if (!url.isValid() || url.host().isEmpty()) {
+        return serverUrl;
+    }
+
+    QString title = url.host();
+    if (url.port() > 0) {
+        title += QStringLiteral(":%1").arg(url.port());
+    }
+    if (!url.path().isEmpty() && url.path() != QStringLiteral("/")) {
+        title += url.path();
+    }
+    return title;
+}
+
+QString defaultServerName(const QString &serverUrl) {
+    return serverTabTitle(serverUrl);
+}
+
+bool isLocalServerUrl(const QString &serverUrl) {
+    const QString host = QUrl(serverUrl).host().toLower();
+    return host == QStringLiteral("127.0.0.1") || host == QStringLiteral("localhost") || host == QStringLiteral("::1");
 }
 
 QString logClearsFilePath() {
     return QDir(appDataDirectoryPath()).filePath(QStringLiteral("log-clears.ini"));
-}
-
-QSettings appSettings() {
-    return QSettings(settingsFilePath(), QSettings::IniFormat);
 }
 
 QSettings logClearsSettings() {
@@ -86,6 +145,55 @@ QSettings logClearsSettings() {
 
 QString logClearPointKey(const QString &instanceId, const QString &taskId) {
     return QStringLiteral("%1/%2").arg(instanceId, taskId);
+}
+
+YAML::Node loadYamlFile(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return YAML::Node(YAML::NodeType::Map);
+    }
+
+    try {
+        YAML::Node root = YAML::Load(file.readAll().toStdString());
+        return root.IsDefined() ? root : YAML::Node(YAML::NodeType::Map);
+    } catch (const YAML::Exception &) {
+        return YAML::Node(YAML::NodeType::Map);
+    }
+}
+
+void saveYamlFile(const QString &path, const YAML::Node &root) {
+    YAML::Emitter emitter;
+    emitter.SetIndent(2);
+    emitter << root;
+    if (!emitter.good()) {
+        return;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        return;
+    }
+    file.write(emitter.c_str());
+    file.write("\n");
+    file.close();
+}
+
+QJsonObject importFailure(const QString &name, const QString &reason) {
+    QJsonObject failure;
+    failure.insert(QStringLiteral("name"), name.trimmed().isEmpty() ? QStringLiteral("(unnamed)") : name.trimmed());
+    failure.insert(QStringLiteral("reason"), reason);
+    return failure;
+}
+
+QString importFailureMessage(const QJsonArray &failures) {
+    QStringList lines;
+    for (const QJsonValue &value : failures) {
+        const QJsonObject failure = value.toObject();
+        const QString name = failure.value(QStringLiteral("name")).toString(QStringLiteral("(unnamed)"));
+        const QString reason = failure.value(QStringLiteral("reason")).toString(QStringLiteral("Unknown error"));
+        lines.append(QStringLiteral("%1: %2").arg(name, reason));
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 QString powershellSingleQuoted(QString value) {
@@ -452,13 +560,92 @@ QString serviceStartTypeLabel() {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     buildUi();
+    loadServerSettings();
+    updateServerTabs();
 
     connect(&m_api, &ApiClient::tasksLoaded, this, &MainWindow::onTasksLoaded);
     connect(&m_api, &ApiClient::logsLoaded, this, &MainWindow::onLogsLoaded);
-    connect(&m_api, &ApiClient::errorOccurred, this, [this](const QString &message) {
+    connect(&m_api, &ApiClient::tasksExported, this, [this](int context, const QJsonArray &tasks) {
+        if (context != m_serverRequestContext) {
+            return;
+        }
+        const QString defaultPath =
+            QDir(appDataDirectoryPath()).filePath(QStringLiteral("runbay-tasks-export.yml"));
+        const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export Tasks"), defaultPath,
+                                                          QStringLiteral("YAML files (*.yml *.yaml);;All files (*)"));
+        if (path.isEmpty()) {
+            return;
+        }
+
+        YAML::Node root;
+        YAML::Node taskNodes(YAML::NodeType::Sequence);
+        for (const QJsonValue &value : tasks) {
+            const QJsonObject task = value.toObject();
+            YAML::Node taskNode;
+            taskNode[QStringLiteral("name").toStdString()] = task.value(QStringLiteral("name")).toString().toStdString();
+            taskNode[QStringLiteral("command").toStdString()] = task.value(QStringLiteral("command")).toString().toStdString();
+            taskNode[QStringLiteral("cwd").toStdString()] = task.value(QStringLiteral("cwd")).toString().toStdString();
+            taskNode[QStringLiteral("start_on_launch").toStdString()] =
+                task.value(QStringLiteral("start_on_launch")).toBool();
+            taskNodes.push_back(taskNode);
+        }
+        root[QStringLiteral("tasks").toStdString()] = taskNodes;
+
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(this, QStringLiteral("Export Tasks"),
+                                 QStringLiteral("Could not write %1").arg(QDir::toNativeSeparators(path)));
+            return;
+        }
+        YAML::Emitter emitter;
+        emitter.SetIndent(2);
+        emitter << root;
+        if (!emitter.good()) {
+            QMessageBox::warning(this, QStringLiteral("Export Tasks"), QStringLiteral("Could not serialize tasks."));
+            return;
+        }
+        file.write(emitter.c_str());
+        file.write("\n");
+        file.close();
+        statusBar()->showMessage(QStringLiteral("Exported %1 tasks").arg(tasks.size()), 5000);
+    });
+    connect(&m_api, &ApiClient::tasksImported, this, [this](int context, int created, const QJsonArray &failures) {
+        if (context != m_serverRequestContext) {
+            return;
+        }
+        QJsonArray allFailures = m_pendingImportFailures;
+        for (const QJsonValue &failure : failures) {
+            allFailures.append(failure);
+        }
+        m_pendingImportFailures = QJsonArray();
+
+        const QString message = allFailures.isEmpty()
+                                    ? QStringLiteral("Imported %1 tasks").arg(created)
+                                    : QStringLiteral("Imported %1 tasks; %2 failed").arg(created).arg(allFailures.size());
+        statusBar()->showMessage(message, 5000);
+        if (allFailures.isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Import Tasks"), message);
+        } else {
+            QMessageBox::warning(this, QStringLiteral("Import Tasks"),
+                                 QStringLiteral("%1\n\nFailed imports:\n%2").arg(message, importFailureMessage(allFailures)));
+        }
+    });
+    connect(&m_api, &ApiClient::errorOccurred, this, [this](int context, const QString &message) {
+        if (context != m_serverRequestContext) {
+            return;
+        }
         statusBar()->showMessage(message, 5000);
     });
-    connect(&m_api, &ApiClient::healthChanged, this, [this](bool ok, const QString &instanceId) {
+    connect(&m_api, &ApiClient::taskRequestFailed, this, [this](int context, const QString &message) {
+        if (context != m_serverRequestContext) {
+            return;
+        }
+        QMessageBox::warning(this, QStringLiteral("RunBay"), message);
+    });
+    connect(&m_api, &ApiClient::healthChanged, this, [this](int context, bool ok, const QString &instanceId) {
+        if (context != m_serverRequestContext) {
+            return;
+        }
         setDaemonConnected(ok);
         if (ok) {
             if (!instanceId.isEmpty() && instanceId != m_serverInstanceId) {
@@ -472,13 +659,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             }
             m_serviceStartAttempted = false;
             m_serviceStatusMessageActive = false;
-            m_connectionLabel->setText(QStringLiteral("Connected: 127.0.0.1:8732"));
+            m_connectionLabel->setText(QStringLiteral("Connected: %1").arg(currentServerUrl()));
         } else if (!m_serviceStartAttempted) {
             m_serverInstanceId.clear();
-            ensureDaemonServiceStarted();
+            if (isLocalServerUrl(currentServerUrl())) {
+                ensureDaemonServiceStarted();
+            } else {
+                setServiceStatus(QStringLiteral("Disconnected: %1").arg(currentServerUrl()));
+            }
         } else if (!m_serviceStatusMessageActive) {
             m_serverInstanceId.clear();
-            m_connectionLabel->setText(QStringLiteral("Disconnected"));
+            m_connectionLabel->setText(QStringLiteral("Disconnected: %1").arg(currentServerUrl()));
         }
     });
 
@@ -495,8 +686,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     m_refreshTimer.start(2500);
     m_logTimer.start(1200);
-    ensureDaemonServiceStarted();
-    refresh();
+    if (m_serverUrls.isEmpty()) {
+        m_currentServerIndex = -1;
+        updateServerEmptyState();
+        if (m_connectionLabel) {
+            m_connectionLabel->setText(QStringLiteral("No server configured"));
+        }
+    } else {
+        setCurrentServer(qBound(0, m_currentServerIndex, m_serverUrls.size() - 1));
+        refresh();
+    }
 }
 
 void MainWindow::buildUi() {
@@ -508,6 +707,21 @@ void MainWindow::buildUi() {
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("File"));
     QAction *openDataDirectoryAction = fileMenu->addAction(QStringLiteral("Open Data Directory"));
     connect(openDataDirectoryAction, &QAction::triggered, this, &MainWindow::openDataDirectory);
+
+    QMenu *taskMenu = menuBar()->addMenu(QStringLiteral("Task"));
+    QAction *addTaskAction = taskMenu->addAction(QStringLiteral("Add Task"));
+    taskMenu->addSeparator();
+    QAction *importTasksAction = taskMenu->addAction(QStringLiteral("Import Tasks..."));
+    QAction *exportTasksAction = taskMenu->addAction(QStringLiteral("Export Tasks..."));
+    connect(addTaskAction, &QAction::triggered, this, &MainWindow::addTask);
+    connect(importTasksAction, &QAction::triggered, this, &MainWindow::importTasks);
+    connect(exportTasksAction, &QAction::triggered, this, &MainWindow::exportTasks);
+
+    QMenu *serverMenu = menuBar()->addMenu(QStringLiteral("Server"));
+    QAction *addServerAction = serverMenu->addAction(QStringLiteral("Add..."));
+    QAction *deleteServerAction = serverMenu->addAction(QStringLiteral("Delete"));
+    connect(addServerAction, &QAction::triggered, this, &MainWindow::addServer);
+    connect(deleteServerAction, &QAction::triggered, this, &MainWindow::deleteCurrentServer);
 
     QMenu *serviceMenu = menuBar()->addMenu(QStringLiteral("Service"));
     QAction *installServiceAction = serviceMenu->addAction(QStringLiteral("Install Service"));
@@ -540,6 +754,13 @@ void MainWindow::buildUi() {
     connect(m_restartAction, &QAction::triggered, this, &MainWindow::restartSelectedTask);
     connect(m_deleteAction, &QAction::triggered, this, &MainWindow::deleteSelectedTask);
     connect(refreshAction, &QAction::triggered, this, &MainWindow::refresh);
+
+    m_serverTabs = new QTabBar(this);
+    m_serverTabs->setDrawBase(false);
+    m_serverTabs->setExpanding(false);
+    m_serverTabs->setMovable(false);
+    m_serverTabs->setElideMode(Qt::ElideRight);
+    connect(m_serverTabs, &QTabBar::currentChanged, this, &MainWindow::onServerTabChanged);
 
     m_searchEdit = new QLineEdit(this);
     m_searchEdit->setPlaceholderText(QStringLiteral("Search tasks"));
@@ -680,7 +901,33 @@ void MainWindow::buildUi() {
         }
         saveUiState();
     });
-    setCentralWidget(m_splitter);
+
+    QWidget *emptyServerPage = new QWidget(this);
+    QVBoxLayout *emptyServerLayout = new QVBoxLayout(emptyServerPage);
+    emptyServerLayout->setContentsMargins(0, 0, 0, 0);
+    emptyServerLayout->addStretch(1);
+    m_emptyServerButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder),
+                                          QStringLiteral("Add Server"), emptyServerPage);
+    m_emptyServerButton->setMinimumSize(180, 42);
+    connect(m_emptyServerButton, &QPushButton::clicked, this, &MainWindow::addServer);
+    QHBoxLayout *emptyServerButtonLayout = new QHBoxLayout;
+    emptyServerButtonLayout->addStretch(1);
+    emptyServerButtonLayout->addWidget(m_emptyServerButton);
+    emptyServerButtonLayout->addStretch(1);
+    emptyServerLayout->addLayout(emptyServerButtonLayout);
+    emptyServerLayout->addStretch(1);
+
+    m_contentStack = new QStackedWidget(this);
+    m_contentStack->addWidget(emptyServerPage);
+    m_contentStack->addWidget(m_splitter);
+
+    QWidget *central = new QWidget(this);
+    QVBoxLayout *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(m_serverTabs);
+    centralLayout->addWidget(m_contentStack, 1);
+    setCentralWidget(central);
     restoreUiState();
 
     m_connectionLabel = new QLabel(QStringLiteral("Checking daemon..."), this);
@@ -690,8 +937,277 @@ void MainWindow::buildUi() {
 }
 
 void MainWindow::refresh() {
+    if (m_currentServerIndex < 0 || m_currentServerIndex >= m_serverUrls.size()) {
+        return;
+    }
     m_api.health();
     m_api.listTasks();
+}
+
+void MainWindow::loadServerSettings() {
+    QStringList normalizedNames;
+    QStringList normalizedUrls;
+    int savedCurrentIndex = 0;
+
+    const YAML::Node root = loadYamlFile(serverConfigFilePath());
+    if (root[QStringLiteral("currentIndex").toStdString()] &&
+        root[QStringLiteral("currentIndex").toStdString()].IsScalar()) {
+        savedCurrentIndex = root[QStringLiteral("currentIndex").toStdString()].as<int>();
+    }
+
+    const YAML::Node servers = root[QStringLiteral("servers").toStdString()];
+    if (servers && servers.IsSequence()) {
+        for (const YAML::Node &server : servers) {
+            if (!server.IsMap()) {
+                continue;
+            }
+
+            QString nameValue;
+            QString urlValue;
+            const YAML::Node nameNode = server[QStringLiteral("name").toStdString()];
+            const YAML::Node urlNode = server[QStringLiteral("url").toStdString()];
+            if (nameNode && nameNode.IsScalar()) {
+                nameValue = QString::fromStdString(nameNode.as<std::string>()).trimmed();
+            }
+            if (urlNode && urlNode.IsScalar()) {
+                urlValue = QString::fromStdString(urlNode.as<std::string>());
+            }
+
+            const QString normalized = normalizedServerUrl(urlValue);
+            if (!normalized.isEmpty() && !normalizedUrls.contains(normalized)) {
+                normalizedNames.append(nameValue.isEmpty() ? defaultServerName(normalized) : nameValue);
+                normalizedUrls.append(normalized);
+            }
+        }
+    }
+
+    m_serverNames = normalizedNames;
+    m_serverUrls = normalizedUrls;
+    m_currentServerIndex = m_serverUrls.isEmpty() ? -1 : qBound(0, savedCurrentIndex, m_serverUrls.size() - 1);
+}
+
+void MainWindow::saveServerSettings() const {
+    YAML::Node root;
+    root[QStringLiteral("currentIndex").toStdString()] = m_currentServerIndex;
+    YAML::Node servers(YAML::NodeType::Sequence);
+    for (int i = 0; i < m_serverUrls.size(); ++i) {
+        const QString name = i < m_serverNames.size() ? m_serverNames.at(i) : defaultServerName(m_serverUrls.at(i));
+        YAML::Node server;
+        server[QStringLiteral("name").toStdString()] = name.toStdString();
+        server[QStringLiteral("url").toStdString()] = m_serverUrls.at(i).toStdString();
+        servers.push_back(server);
+    }
+    root[QStringLiteral("servers").toStdString()] = servers;
+
+    saveYamlFile(serverConfigFilePath(), root);
+}
+
+void MainWindow::updateServerTabs() {
+    if (!m_serverTabs) {
+        return;
+    }
+
+    const QSignalBlocker blocker(m_serverTabs);
+    while (m_serverTabs->count() > 0) {
+        m_serverTabs->removeTab(0);
+    }
+    for (int i = 0; i < m_serverUrls.size(); ++i) {
+        const QString name = i < m_serverNames.size() ? m_serverNames.at(i) : defaultServerName(m_serverUrls.at(i));
+        const int tabIndex = m_serverTabs->addTab(name);
+        m_serverTabs->setTabData(tabIndex, m_serverUrls.at(i));
+        m_serverTabs->setTabToolTip(tabIndex, m_serverUrls.at(i));
+    }
+    m_serverTabs->setCurrentIndex(m_currentServerIndex);
+    updateServerEmptyState();
+}
+
+QString MainWindow::currentServerUrl() const {
+    if (m_currentServerIndex < 0 || m_currentServerIndex >= m_serverUrls.size()) {
+        return {};
+    }
+    return m_serverUrls.at(m_currentServerIndex);
+}
+
+QString MainWindow::currentServerName() const {
+    if (m_currentServerIndex < 0 || m_currentServerIndex >= m_serverNames.size()) {
+        return {};
+    }
+    return m_serverNames.at(m_currentServerIndex);
+}
+
+void MainWindow::updateServerEmptyState() {
+    const bool hasServers = !m_serverUrls.isEmpty();
+    if (m_serverTabs) {
+        m_serverTabs->setVisible(hasServers);
+    }
+    if (m_contentStack) {
+        m_contentStack->setCurrentIndex(hasServers ? 1 : 0);
+    }
+    if (m_searchEdit) {
+        m_searchEdit->setEnabled(hasServers);
+    }
+    if (!hasServers) {
+        m_daemonConnected = false;
+        m_currentServerIndex = -1;
+        m_serverInstanceId.clear();
+        m_loadedLogTaskId.clear();
+        m_lastLogEntryId = 0;
+        m_logFormat = QTextCharFormat();
+        m_api.cancelPendingRequests();
+        m_taskModel.setTasks(QList<Task>());
+        m_taskModel.setDisconnected(true);
+        if (m_logView) {
+            m_logView->clear();
+        }
+        if (m_detailLabel) {
+            m_detailLabel->setText(QStringLiteral("No task selected"));
+        }
+        if (m_summaryLabel) {
+            m_summaryLabel->setText(QStringLiteral("0 tasks"));
+        }
+        updateActions();
+    }
+}
+
+void MainWindow::setCurrentServer(int index) {
+    if (m_serverUrls.isEmpty()) {
+        m_currentServerIndex = -1;
+        ++m_serverRequestContext;
+        m_api.setContext(m_serverRequestContext);
+        updateServerEmptyState();
+        return;
+    }
+
+    index = qBound(0, index, m_serverUrls.size() - 1);
+    m_currentServerIndex = index;
+    ++m_serverRequestContext;
+    m_api.setContext(m_serverRequestContext);
+    m_api.cancelPendingRequests();
+    m_api.setBaseUrl(QUrl(m_serverUrls.at(index)));
+    m_serverInstanceId.clear();
+    m_loadedLogTaskId.clear();
+    m_lastLogEntryId = 0;
+    m_logFormat = QTextCharFormat();
+    m_daemonConnected = false;
+    m_serviceStartAttempted = false;
+    m_serviceStatusMessageActive = false;
+    m_taskModel.setTasks(QList<Task>());
+    m_taskModel.setDisconnected(true);
+    if (m_taskView) {
+        m_taskView->clearSelection();
+    }
+    if (m_logView) {
+        m_logView->clear();
+    }
+    if (m_detailLabel) {
+        m_detailLabel->setText(QStringLiteral("No task selected"));
+    }
+    if (m_summaryLabel) {
+        m_summaryLabel->setText(QStringLiteral("0 tasks"));
+    }
+    if (m_connectionLabel) {
+        m_connectionLabel->setText(QStringLiteral("Connecting: %1").arg(currentServerUrl()));
+    }
+    if (m_serverTabs && m_serverTabs->currentIndex() != index) {
+        const QSignalBlocker blocker(m_serverTabs);
+        m_serverTabs->setCurrentIndex(index);
+    }
+    saveServerSettings();
+    updateServerEmptyState();
+    updateActions();
+    refresh();
+}
+
+void MainWindow::addServer() {
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Add Server"));
+    dialog.setMinimumWidth(460);
+
+    QLineEdit nameEdit;
+    QLineEdit urlEdit;
+    nameEdit.setMinimumWidth(320);
+    urlEdit.setMinimumWidth(320);
+    nameEdit.setPlaceholderText(QStringLiteral("Local daemon"));
+    urlEdit.setPlaceholderText(QStringLiteral("http://127.0.0.1:8732"));
+
+    QFormLayout form(&dialog);
+    form.addRow(QStringLiteral("Name"), &nameEdit);
+    form.addRow(QStringLiteral("URL"), &urlEdit);
+
+    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    form.addRow(&buttons);
+    connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString name = nameEdit.text().trimmed();
+    const QString url = normalizedServerUrl(urlEdit.text());
+    if (name.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Add Server"), QStringLiteral("Name is required."));
+        return;
+    }
+    if (url.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Add Server"), QStringLiteral("Enter a valid http or https URL."));
+        return;
+    }
+
+    const int existingIndex = m_serverUrls.indexOf(url);
+    if (existingIndex >= 0) {
+        setCurrentServer(existingIndex);
+        return;
+    }
+
+    m_serverNames.append(name);
+    m_serverUrls.append(url);
+    m_currentServerIndex = m_serverUrls.size() - 1;
+    updateServerTabs();
+    setCurrentServer(m_currentServerIndex);
+}
+
+void MainWindow::deleteCurrentServer() {
+    if (m_currentServerIndex < 0 || m_currentServerIndex >= m_serverUrls.size()) {
+        QMessageBox::information(this, QStringLiteral("Delete Server"), QStringLiteral("No server is selected."));
+        return;
+    }
+
+    const QString name = currentServerName();
+    const QString url = currentServerUrl();
+    if (QMessageBox::question(this, QStringLiteral("Delete Server"),
+                              QStringLiteral("Delete server %1 (%2)?").arg(name, url)) != QMessageBox::Yes) {
+        return;
+    }
+
+    if (m_currentServerIndex < m_serverNames.size()) {
+        m_serverNames.removeAt(m_currentServerIndex);
+    }
+    m_serverUrls.removeAt(m_currentServerIndex);
+    m_currentServerIndex = m_serverUrls.isEmpty() ? -1 : qMin(m_currentServerIndex, m_serverUrls.size() - 1);
+
+    if (m_currentServerIndex < 0) {
+        ++m_serverRequestContext;
+        m_api.setContext(m_serverRequestContext);
+        m_api.cancelPendingRequests();
+        saveServerSettings();
+        updateServerTabs();
+        updateServerEmptyState();
+        if (m_connectionLabel) {
+            m_connectionLabel->setText(QStringLiteral("No server configured"));
+        }
+        return;
+    }
+
+    updateServerTabs();
+    setCurrentServer(m_currentServerIndex);
+}
+
+void MainWindow::onServerTabChanged(int index) {
+    if (index < 0 || index == m_currentServerIndex) {
+        return;
+    }
+    setCurrentServer(index);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -752,6 +1268,11 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
 }
 
 void MainWindow::addTask() {
+    if (currentServerUrl().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Add a server before creating tasks."));
+        return;
+    }
+
     QString name;
     QString command;
     QString cwd;
@@ -762,7 +1283,137 @@ void MainWindow::addTask() {
     m_api.createTask(name, command, cwd, startOnLaunch);
 }
 
+void MainWindow::importTasks() {
+    m_pendingImportFailures = QJsonArray();
+
+    if (currentServerUrl().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Add a server before importing tasks."));
+        return;
+    }
+
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Import Tasks"), appDataDirectoryPath(),
+                                                      QStringLiteral("YAML files (*.yml *.yaml);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, QStringLiteral("Import Tasks"),
+                             QStringLiteral("Could not read %1").arg(QDir::toNativeSeparators(path)));
+        return;
+    }
+
+    YAML::Node root;
+    try {
+        root = YAML::Load(file.readAll().toStdString());
+    } catch (const YAML::Exception &err) {
+        QMessageBox::warning(this, QStringLiteral("Import Tasks"),
+                             QStringLiteral("Invalid YAML: %1").arg(QString::fromStdString(err.msg)));
+        return;
+    }
+
+    QStringList knownNames;
+    for (int row = 0; row < m_taskModel.rowCount(); ++row) {
+        const QString taskName = m_taskModel.taskAt(row).name.trimmed();
+        if (!taskName.isEmpty()) {
+            knownNames.append(taskName.toCaseFolded());
+        }
+    }
+
+    QJsonArray tasks;
+    QJsonArray failures;
+    const YAML::Node taskNodes = root[QStringLiteral("tasks").toStdString()];
+    if (taskNodes && taskNodes.IsSequence()) {
+        for (const YAML::Node &taskNode : taskNodes) {
+            if (!taskNode.IsMap()) {
+                failures.append(importFailure(QString(), QStringLiteral("Task entry must be a map.")));
+                continue;
+            }
+
+            const YAML::Node nameNode = taskNode[QStringLiteral("name").toStdString()];
+            const YAML::Node commandNode = taskNode[QStringLiteral("command").toStdString()];
+            const YAML::Node cwdNode = taskNode[QStringLiteral("cwd").toStdString()];
+            const YAML::Node startOnLaunchNode = taskNode[QStringLiteral("start_on_launch").toStdString()];
+
+            QString name;
+            QString command;
+            QString cwd;
+            bool startOnLaunch = false;
+            if (nameNode && nameNode.IsScalar()) {
+                name = QString::fromStdString(nameNode.as<std::string>()).trimmed();
+            }
+            if (commandNode && commandNode.IsScalar()) {
+                command = QString::fromStdString(commandNode.as<std::string>()).trimmed();
+            }
+            if (cwdNode && cwdNode.IsScalar()) {
+                cwd = QString::fromStdString(cwdNode.as<std::string>()).trimmed();
+            }
+            if (startOnLaunchNode && startOnLaunchNode.IsScalar()) {
+                startOnLaunch = startOnLaunchNode.as<bool>(false);
+            }
+
+            if (name.isEmpty() || command.isEmpty()) {
+                failures.append(importFailure(name, QStringLiteral("Name and command are required.")));
+                continue;
+            }
+
+            const QString foldedName = name.toCaseFolded();
+            if (knownNames.contains(foldedName)) {
+                failures.append(importFailure(name, QStringLiteral("A task with this name already exists.")));
+                continue;
+            }
+
+            knownNames.append(foldedName);
+            QJsonObject task;
+            task.insert(QStringLiteral("name"), name);
+            task.insert(QStringLiteral("command"), command);
+            task.insert(QStringLiteral("cwd"), cwd);
+            task.insert(QStringLiteral("start_on_launch"), startOnLaunch);
+            tasks.append(task);
+        }
+    }
+
+    if (tasks.isEmpty()) {
+        if (failures.isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Import Tasks"), QStringLiteral("No tasks found in this YAML file."));
+        } else {
+            QMessageBox::warning(this, QStringLiteral("Import Tasks"),
+                                 QStringLiteral("No tasks were imported.\n\nFailed imports:\n%1").arg(importFailureMessage(failures)));
+        }
+        return;
+    }
+
+    if (QMessageBox::question(this, QStringLiteral("Import Tasks"),
+                              failures.isEmpty()
+                                  ? QStringLiteral("Import %1 tasks into %2?").arg(tasks.size()).arg(currentServerUrl())
+                                  : QStringLiteral("Import %1 tasks into %2? %3 task(s) will be skipped.")
+                                        .arg(tasks.size())
+                                        .arg(currentServerUrl())
+                                        .arg(failures.size())) !=
+        QMessageBox::Yes) {
+        return;
+    }
+
+    m_pendingImportFailures = failures;
+    m_api.importTasks(tasks);
+}
+
+void MainWindow::exportTasks() {
+    if (currentServerUrl().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Add a server before exporting tasks."));
+        return;
+    }
+
+    m_api.exportTasks();
+}
+
 void MainWindow::addTaskFromRunnable(const QString &runnablePath) {
+    if (currentServerUrl().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Add a server before creating tasks."));
+        return;
+    }
+
     const QFileInfo runnableInfo(runnablePath);
     if (!isRunnableFile(runnableInfo)) {
         return;
@@ -1107,7 +1758,10 @@ void MainWindow::onSelectionChanged() {
     }
 }
 
-void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
+void MainWindow::onTasksLoaded(int context, const QList<Task> &tasks) {
+    if (context != m_serverRequestContext) {
+        return;
+    }
     setDaemonConnected(true);
     const QString previous = selectedTaskId();
     m_taskModel.setTasks(tasks);
@@ -1160,7 +1814,10 @@ void MainWindow::onTasksLoaded(const QList<Task> &tasks) {
     updateActions();
 }
 
-void MainWindow::onLogsLoaded(const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated) {
+void MainWindow::onLogsLoaded(int context, const QString &taskId, const QString &instanceId, const QList<LogEntry> &entries, quint64 startId, quint64 endId, bool truncated) {
+    if (context != m_serverRequestContext) {
+        return;
+    }
     if (taskId != selectedTaskId()) {
         return;
     }
@@ -1298,17 +1955,27 @@ void MainWindow::setServiceStatus(const QString &message) {
 }
 
 void MainWindow::restoreUiState() {
-    QSettings settings = appSettings();
+    const YAML::Node settings = loadYamlFile(settingsFilePath());
 
-    const int savedWindowWidth = settings.value(QStringLiteral("window/width"), 0).toInt();
-    const int savedWindowHeight = settings.value(QStringLiteral("window/height"), 0).toInt();
+    const YAML::Node windowNode = settings[QStringLiteral("window").toStdString()];
+    const int savedWindowWidth = windowNode && windowNode[QStringLiteral("width").toStdString()]
+                                     ? windowNode[QStringLiteral("width").toStdString()].as<int>(0)
+                                     : 0;
+    const int savedWindowHeight = windowNode && windowNode[QStringLiteral("height").toStdString()]
+                                      ? windowNode[QStringLiteral("height").toStdString()].as<int>(0)
+                                      : 0;
     if (savedWindowWidth > 0 && savedWindowHeight > 0) {
         resize(QSize(savedWindowWidth, savedWindowHeight).expandedTo(minimumSize()));
     }
 
     if (m_splitter) {
-        const int leftWidth = settings.value(QStringLiteral("splitter/leftWidth"), 0).toInt();
-        const int rightWidth = settings.value(QStringLiteral("splitter/rightWidth"), 0).toInt();
+        const YAML::Node splitterNode = settings[QStringLiteral("splitter").toStdString()];
+        const int leftWidth = splitterNode && splitterNode[QStringLiteral("leftWidth").toStdString()]
+                                  ? splitterNode[QStringLiteral("leftWidth").toStdString()].as<int>(0)
+                                  : 0;
+        const int rightWidth = splitterNode && splitterNode[QStringLiteral("rightWidth").toStdString()]
+                                   ? splitterNode[QStringLiteral("rightWidth").toStdString()].as<int>(0)
+                                   : 0;
         if (leftWidth >= kTaskListMinWidth && rightWidth > 0) {
             m_splitter->setSizes({leftWidth, rightWidth});
         }
@@ -1319,10 +1986,22 @@ void MainWindow::restoreUiState() {
     }
 
     const int savedColumnWidths[TaskTableModel::ColumnCount] = {
-        settings.value(QStringLiteral("taskList/nameWidth"), 0).toInt(),
-        settings.value(QStringLiteral("taskList/statusWidth"), 0).toInt(),
-        settings.value(QStringLiteral("taskList/pidWidth"), 0).toInt(),
-        settings.value(QStringLiteral("taskList/commandWidth"), 0).toInt(),
+        settings[QStringLiteral("taskList").toStdString()] &&
+                settings[QStringLiteral("taskList").toStdString()][QStringLiteral("nameWidth").toStdString()]
+            ? settings[QStringLiteral("taskList").toStdString()][QStringLiteral("nameWidth").toStdString()].as<int>(0)
+            : 0,
+        settings[QStringLiteral("taskList").toStdString()] &&
+                settings[QStringLiteral("taskList").toStdString()][QStringLiteral("statusWidth").toStdString()]
+            ? settings[QStringLiteral("taskList").toStdString()][QStringLiteral("statusWidth").toStdString()].as<int>(0)
+            : 0,
+        settings[QStringLiteral("taskList").toStdString()] &&
+                settings[QStringLiteral("taskList").toStdString()][QStringLiteral("pidWidth").toStdString()]
+            ? settings[QStringLiteral("taskList").toStdString()][QStringLiteral("pidWidth").toStdString()].as<int>(0)
+            : 0,
+        settings[QStringLiteral("taskList").toStdString()] &&
+                settings[QStringLiteral("taskList").toStdString()][QStringLiteral("commandWidth").toStdString()]
+            ? settings[QStringLiteral("taskList").toStdString()][QStringLiteral("commandWidth").toStdString()].as<int>(0)
+            : 0,
     };
     bool hasSavedColumnWidths = true;
     for (int column = 0; column < TaskTableModel::ColumnCount; ++column) {
@@ -1344,26 +2023,30 @@ void MainWindow::restoreUiState() {
 }
 
 void MainWindow::saveUiState() const {
-    QSettings settings = appSettings();
-    settings.setValue(QStringLiteral("window/width"), width());
-    settings.setValue(QStringLiteral("window/height"), height());
+    YAML::Node settings;
+    settings[QStringLiteral("window").toStdString()][QStringLiteral("width").toStdString()] = width();
+    settings[QStringLiteral("window").toStdString()][QStringLiteral("height").toStdString()] = height();
 
     if (m_splitter) {
         const QList<int> splitterSizes = m_splitter->sizes();
         if (splitterSizes.size() >= 2) {
-            settings.setValue(QStringLiteral("splitter/leftWidth"), splitterSizes.at(0));
-            settings.setValue(QStringLiteral("splitter/rightWidth"), splitterSizes.at(1));
+            settings[QStringLiteral("splitter").toStdString()][QStringLiteral("leftWidth").toStdString()] = splitterSizes.at(0);
+            settings[QStringLiteral("splitter").toStdString()][QStringLiteral("rightWidth").toStdString()] = splitterSizes.at(1);
         }
     }
 
     if (m_taskView) {
-        settings.setValue(QStringLiteral("taskList/nameWidth"), m_taskView->columnWidth(TaskTableModel::NameColumn));
-        settings.setValue(QStringLiteral("taskList/statusWidth"), m_taskView->columnWidth(TaskTableModel::StatusColumn));
-        settings.setValue(QStringLiteral("taskList/pidWidth"), m_taskView->columnWidth(TaskTableModel::PidColumn));
-        settings.setValue(QStringLiteral("taskList/commandWidth"), m_taskView->columnWidth(TaskTableModel::CommandColumn));
+        settings[QStringLiteral("taskList").toStdString()][QStringLiteral("nameWidth").toStdString()] =
+            m_taskView->columnWidth(TaskTableModel::NameColumn);
+        settings[QStringLiteral("taskList").toStdString()][QStringLiteral("statusWidth").toStdString()] =
+            m_taskView->columnWidth(TaskTableModel::StatusColumn);
+        settings[QStringLiteral("taskList").toStdString()][QStringLiteral("pidWidth").toStdString()] =
+            m_taskView->columnWidth(TaskTableModel::PidColumn);
+        settings[QStringLiteral("taskList").toStdString()][QStringLiteral("commandWidth").toStdString()] =
+            m_taskView->columnWidth(TaskTableModel::CommandColumn);
     }
 
-    settings.sync();
+    saveYamlFile(settingsFilePath(), settings);
 }
 
 quint64 MainWindow::clearedLogEntryId(const QString &taskId) const {
@@ -1562,6 +2245,31 @@ void MainWindow::applyStyle() {
 
         QToolButton:pressed {
             background: #e2e8ee;
+        }
+
+        QTabBar {
+            background: #fbfbfc;
+            border-bottom: 1px solid #d7dce1;
+        }
+
+        QTabBar::tab {
+            min-width: 120px;
+            max-width: 260px;
+            padding: 8px 14px;
+            border: 0;
+            border-right: 1px solid #d7dce1;
+            color: #52606d;
+            background: #eef2f5;
+        }
+
+        QTabBar::tab:selected {
+            color: #1f2933;
+            background: #ffffff;
+            font-weight: 600;
+        }
+
+        QTabBar::tab:hover {
+            background: #f6f8fa;
         }
 
         QLineEdit {

@@ -58,7 +58,7 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 		}
 		t, err := s.store.Create(req)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeStoreError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, t)
@@ -189,6 +189,10 @@ func newInstanceID() string {
 func writeStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if errors.Is(err, store.ErrNameConflict) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if errors.Is(err, process.ErrAlreadyRunning) {
