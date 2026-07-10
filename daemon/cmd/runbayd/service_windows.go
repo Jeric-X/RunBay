@@ -11,6 +11,7 @@ import (
 type runbayService struct {
 	addr     string
 	dataPath string
+	logPath  string
 }
 
 func isWindowsService() bool {
@@ -18,8 +19,8 @@ func isWindowsService() bool {
 	return err == nil && isService
 }
 
-func runWindowsService(name, addr, dataPath string) error {
-	return svc.Run(name, &runbayService{addr: addr, dataPath: dataPath})
+func runWindowsService(name, addr, dataPath, logPath string) error {
+	return svc.Run(name, &runbayService{addr: addr, dataPath: dataPath, logPath: logPath})
 }
 
 func (s *runbayService) Execute(args []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -31,7 +32,7 @@ func (s *runbayService) Execute(args []string, requests <-chan svc.ChangeRequest
 
 	changes <- svc.Status{State: svc.StartPending}
 	go func() {
-		done <- runDaemon(s.addr, s.dataPath, stop)
+		done <- runDaemon(s.addr, s.dataPath, s.logPath, stop)
 	}()
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}
 

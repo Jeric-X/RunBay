@@ -39,11 +39,11 @@ func DefaultRoot() string {
 	switch runtime.GOOS {
 	case "windows":
 		if dir := os.Getenv("ProgramData"); dir != "" {
-			return filepath.Join(dir, "RunBay", "logs")
+			return filepath.Join(dir, "RunBayd", "logs")
 		}
-		return `C:\ProgramData\RunBay\logs`
+		return `C:\ProgramData\RunBayd\logs`
 	default:
-		return filepath.Join(os.TempDir(), "runbay", "logs")
+		return filepath.Join(os.TempDir(), "runbayd", "logs")
 	}
 }
 

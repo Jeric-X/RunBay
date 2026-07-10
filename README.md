@@ -105,6 +105,23 @@ installed, running, and configured for automatic startup. It does not install
 or start the service automatically; use the Service menu to install, start,
 stop, or delete it.
 
+### Windows service account setup
+
+When registering a service to run as a normal Windows user account, configure
+the account before starting the service:
+
+1. Open `secpol.msc` from the Run dialog or Start menu.
+2. Go to `Local Policies` -> `User Rights Assignment`.
+3. Open `Log on as a service`.
+4. Add the service account, for example `.\username` or
+   `COMPUTERNAME\username`.
+5. Make sure the account can read and write the selected RunBay data directory.
+6. Register and start the service from the Qt client's Service menu.
+
+Windows Home may not include `secpol.msc`. In domain-managed environments, Group
+Policy can overwrite this local setting; ask the domain administrator to grant
+`Log on as a service` to the account if the setting does not persist.
+
 Daemon and task log files are written under `%ProgramData%\RunBay\logs` on
 Windows. Logs are grouped by date folder and old folders are pruned daily, with
 the latest seven days retained.

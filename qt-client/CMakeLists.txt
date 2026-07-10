@@ -32,10 +32,14 @@ endif()
 
 qt_add_executable(runbay-client
     src/main.cpp
+    src/AppUtils.cpp
+    src/AppUtils.h
     src/ApiClient.cpp
     src/ApiClient.h
     src/MainWindow.cpp
     src/MainWindow.h
+    src/ServiceManagerWindow.cpp
+    src/ServiceManagerWindow.h
     src/Task.h
     src/TaskTableModel.cpp
     src/TaskTableModel.h
@@ -44,8 +48,12 @@ qt_add_executable(runbay-client
 
 target_link_libraries(runbay-client PRIVATE Qt6::Widgets Qt6::Network yaml-cpp::yaml-cpp)
 
+if(MSVC)
+    target_compile_options(runbay-client PRIVATE /utf-8)
+endif()
+
 if(WIN32)
     target_sources(runbay-client PRIVATE resources/runbay.rc)
     set_target_properties(runbay-client PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_libraries(runbay-client PRIVATE ole32 uuid)
+    target_link_libraries(runbay-client PRIVATE credui ole32 uuid)
 endif()

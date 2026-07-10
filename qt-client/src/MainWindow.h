@@ -20,6 +20,7 @@
 
 class QCloseEvent;
 class QResizeEvent;
+class ServiceManagerWindow;
 class QSplitter;
 
 class MainWindow : public QMainWindow {
@@ -49,10 +50,7 @@ private slots:
     void addServer();
     void deleteCurrentServer();
     void onServerTabChanged(int index);
-    void installService();
-    void deleteService();
-    void startService();
-    void stopService();
+    void openServiceManager();
     void editTaskAt(const QModelIndex &index);
     void onTaskHeaderSectionResized(int logicalIndex, int oldSize, int newSize);
     void onSelectionChanged();
@@ -65,14 +63,12 @@ private:
     void updateActions();
     void applyStyle();
     void ensureDaemonServiceStarted();
-    QString bundledDaemonPath() const;
-    bool installServiceWithDaemon(const QString &daemonPath);
-    bool runElevatedPowerShell(const QString &command);
     void addTaskFromRunnable(const QString &runnablePath);
     void setDaemonConnected(bool connected);
     void setServiceStatus(const QString &message);
     void loadServerSettings();
     void saveServerSettings() const;
+    void addServerWithDefaults(const QString &defaultName, const QString &defaultUrl);
     void setCurrentServer(int index);
     void updateServerTabs();
     void updateServerEmptyState();
@@ -105,6 +101,7 @@ private:
     QAction *m_stopAction = nullptr;
     QAction *m_restartAction = nullptr;
     QAction *m_deleteAction = nullptr;
+    ServiceManagerWindow *m_serviceManagerWindow = nullptr;
     QTimer m_refreshTimer;
     QTimer m_logTimer;
     QStringList m_serverNames;

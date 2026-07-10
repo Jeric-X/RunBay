@@ -6,6 +6,6 @@ func isWindowsService() bool {
 	return false
 }
 
-func runWindowsService(name, addr, dataPath string) error {
+func runWindowsService(name, addr, dataPath, logPath string) error {
 	return nil
 }

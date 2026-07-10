@@ -1,5 +1,8 @@
 #include "MainWindow.h"
 
+#include "AppUtils.h"
+#include "ServiceManagerWindow.h"
+
 #include <QAction>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -39,7 +42,6 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
-#include <QStandardPaths>
 #include <QStyle>
 #include <QTabBar>
 #include <QStringList>
@@ -49,8 +51,6 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
-
-#include <yaml-cpp/yaml.h>
 
 #ifdef Q_OS_WIN
 #include <objbase.h>
@@ -63,26 +63,12 @@ constexpr int kTaskListMinWidth = 330;
 constexpr int kTaskColumnMinWidths[TaskTableModel::ColumnCount] = {96, 76, 44, 96};
 const QSize kDefaultWindowSize(1180, 760);
 
-QString appDataDirectoryPath() {
-#ifdef Q_OS_WIN
-    const QString roamingRoot = qEnvironmentVariable("APPDATA");
-    const QString dataPath = roamingRoot.isEmpty() ? QDir::home().filePath(QStringLiteral(".runbay"))
-                                                   : QDir(roamingRoot).filePath(QStringLiteral("RunBay"));
-#else
-    const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    const QString dataPath = dataRoot.isEmpty() ? QDir::home().filePath(QStringLiteral(".runbay"))
-                                                : QDir(dataRoot).filePath(QStringLiteral("RunBay"));
-#endif
-    QDir().mkpath(dataPath);
-    return dataPath;
-}
-
 QString settingsFilePath() {
-    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("settings.yml"));
+    return AppUtils::appDataFilePath(QStringLiteral("settings.yml"));
 }
 
 QString serverConfigFilePath() {
-    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("servers.yml"));
+    return AppUtils::appDataFilePath(QStringLiteral("servers.yml"));
 }
 
 QString normalizedServerUrl(QString value) {
@@ -136,7 +122,7 @@ bool isLocalServerUrl(const QString &serverUrl) {
 }
 
 QString logClearsFilePath() {
-    return QDir(appDataDirectoryPath()).filePath(QStringLiteral("log-clears.ini"));
+    return AppUtils::appDataFilePath(QStringLiteral("log-clears.ini"));
 }
 
 QSettings logClearsSettings() {
@@ -145,37 +131,6 @@ QSettings logClearsSettings() {
 
 QString logClearPointKey(const QString &instanceId, const QString &taskId) {
     return QStringLiteral("%1/%2").arg(instanceId, taskId);
-}
-
-YAML::Node loadYamlFile(const QString &path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return YAML::Node(YAML::NodeType::Map);
-    }
-
-    try {
-        YAML::Node root = YAML::Load(file.readAll().toStdString());
-        return root.IsDefined() ? root : YAML::Node(YAML::NodeType::Map);
-    } catch (const YAML::Exception &) {
-        return YAML::Node(YAML::NodeType::Map);
-    }
-}
-
-void saveYamlFile(const QString &path, const YAML::Node &root) {
-    YAML::Emitter emitter;
-    emitter.SetIndent(2);
-    emitter << root;
-    if (!emitter.good()) {
-        return;
-    }
-
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        return;
-    }
-    file.write(emitter.c_str());
-    file.write("\n");
-    file.close();
 }
 
 QJsonObject importFailure(const QString &name, const QString &reason) {
@@ -194,11 +149,6 @@ QString importFailureMessage(const QJsonArray &failures) {
         lines.append(QStringLiteral("%1: %2").arg(name, reason));
     }
     return lines.join(QLatin1Char('\n'));
-}
-
-QString powershellSingleQuoted(QString value) {
-    value.replace(QLatin1Char('\''), QStringLiteral("''"));
-    return QStringLiteral("'%1'").arg(value);
 }
 
 QIcon logJumpIcon(bool top) {
@@ -570,7 +520,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             return;
         }
         const QString defaultPath =
-            QDir(appDataDirectoryPath()).filePath(QStringLiteral("runbay-tasks-export.yml"));
+            AppUtils::appDataFilePath(QStringLiteral("runbay-tasks-export.yml"));
         const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export Tasks"), defaultPath,
                                                           QStringLiteral("YAML files (*.yml *.yaml);;All files (*)"));
         if (path.isEmpty()) {
@@ -723,16 +673,8 @@ void MainWindow::buildUi() {
     connect(addServerAction, &QAction::triggered, this, &MainWindow::addServer);
     connect(deleteServerAction, &QAction::triggered, this, &MainWindow::deleteCurrentServer);
 
-    QMenu *serviceMenu = menuBar()->addMenu(QStringLiteral("Service"));
-    QAction *installServiceAction = serviceMenu->addAction(QStringLiteral("Install Service"));
-    QAction *startServiceAction = serviceMenu->addAction(QStringLiteral("Start Service"));
-    QAction *stopServiceAction = serviceMenu->addAction(QStringLiteral("Stop Service"));
-    serviceMenu->addSeparator();
-    QAction *deleteServiceAction = serviceMenu->addAction(QStringLiteral("Delete Service"));
-    connect(installServiceAction, &QAction::triggered, this, &MainWindow::installService);
-    connect(startServiceAction, &QAction::triggered, this, &MainWindow::startService);
-    connect(stopServiceAction, &QAction::triggered, this, &MainWindow::stopService);
-    connect(deleteServiceAction, &QAction::triggered, this, &MainWindow::deleteService);
+    QAction *serviceAction = menuBar()->addAction(QStringLiteral("Service"));
+    connect(serviceAction, &QAction::triggered, this, &MainWindow::openServiceManager);
 
     QToolBar *toolbar = addToolBar(QStringLiteral("Tasks"));
     toolbar->setMovable(false);
@@ -949,7 +891,7 @@ void MainWindow::loadServerSettings() {
     QStringList normalizedUrls;
     int savedCurrentIndex = 0;
 
-    const YAML::Node root = loadYamlFile(serverConfigFilePath());
+    const YAML::Node root = AppUtils::loadYamlFile(serverConfigFilePath());
     if (root[QStringLiteral("currentIndex").toStdString()] &&
         root[QStringLiteral("currentIndex").toStdString()].IsScalar()) {
         savedCurrentIndex = root[QStringLiteral("currentIndex").toStdString()].as<int>();
@@ -999,7 +941,7 @@ void MainWindow::saveServerSettings() const {
     }
     root[QStringLiteral("servers").toStdString()] = servers;
 
-    saveYamlFile(serverConfigFilePath(), root);
+    AppUtils::saveYamlFile(serverConfigFilePath(), root);
 }
 
 void MainWindow::updateServerTabs() {
@@ -1119,6 +1061,10 @@ void MainWindow::setCurrentServer(int index) {
 }
 
 void MainWindow::addServer() {
+    addServerWithDefaults(QStringLiteral("Local daemon"), QStringLiteral("http://127.0.0.1:8732"));
+}
+
+void MainWindow::addServerWithDefaults(const QString &defaultName, const QString &defaultUrl) {
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Add Server"));
     dialog.setMinimumWidth(460);
@@ -1129,6 +1075,8 @@ void MainWindow::addServer() {
     urlEdit.setMinimumWidth(320);
     nameEdit.setPlaceholderText(QStringLiteral("Local daemon"));
     urlEdit.setPlaceholderText(QStringLiteral("http://127.0.0.1:8732"));
+    nameEdit.setText(defaultName);
+    urlEdit.setText(defaultUrl);
 
     QFormLayout form(&dialog);
     form.addRow(QStringLiteral("Name"), &nameEdit);
@@ -1154,8 +1102,18 @@ void MainWindow::addServer() {
         return;
     }
 
+    for (const QString &existingName : m_serverNames) {
+        if (existingName.compare(name, Qt::CaseInsensitive) == 0) {
+            QMessageBox::warning(this, QStringLiteral("Add Server"),
+                                 QStringLiteral("Server name already exists: %1").arg(name));
+            return;
+        }
+    }
+
     const int existingIndex = m_serverUrls.indexOf(url);
     if (existingIndex >= 0) {
+        QMessageBox::warning(this, QStringLiteral("Add Server"),
+                             QStringLiteral("Server URL already exists: %1").arg(url));
         setCurrentServer(existingIndex);
         return;
     }
@@ -1291,7 +1249,7 @@ void MainWindow::importTasks() {
         return;
     }
 
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Import Tasks"), appDataDirectoryPath(),
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Import Tasks"), AppUtils::appDataDirectoryPath(),
                                                       QStringLiteral("YAML files (*.yml *.yaml);;All files (*)"));
     if (path.isEmpty()) {
         return;
@@ -1571,171 +1529,41 @@ void MainWindow::scrollLogToBottom() {
 }
 
 void MainWindow::openDataDirectory() {
-    QDesktopServices::openUrl(QUrl::fromLocalFile(appDataDirectoryPath()));
+    QDesktopServices::openUrl(QUrl::fromLocalFile(AppUtils::appDataDirectoryPath()));
 }
 
-void MainWindow::installService() {
-#ifndef Q_OS_WIN
-    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service installation is only available on Windows."));
-    return;
-#else
-    QString daemonPath = bundledDaemonPath();
-    if (daemonPath.isEmpty()) {
-        daemonPath = QFileDialog::getOpenFileName(this, QStringLiteral("Select RunBay daemon"),
-                                                  QCoreApplication::applicationDirPath(),
-                                                  QStringLiteral("Executable (*.exe);;All files (*.*)"));
-        if (daemonPath.isEmpty()) {
-            return;
+void MainWindow::openServiceManager() {
+    if (m_serviceManagerWindow) {
+        m_serviceManagerWindow->show();
+        m_serviceManagerWindow->raise();
+        m_serviceManagerWindow->activateWindow();
+        return;
+    }
+
+    m_serviceManagerWindow = new ServiceManagerWindow;
+    m_serviceManagerWindow->setAttribute(Qt::WA_DeleteOnClose);
+    connect(this, &QObject::destroyed, m_serviceManagerWindow, &QWidget::close);
+    connect(m_serviceManagerWindow, &QObject::destroyed, this, [this]() {
+        m_serviceManagerWindow = nullptr;
+    });
+    connect(m_serviceManagerWindow, &ServiceManagerWindow::serviceActionRequested, this, [this](const QString &message) {
+        setServiceStatus(message);
+        QTimer::singleShot(3000, this, [this]() {
+            m_serviceStartAttempted = false;
+            refresh();
+        });
+    });
+    connect(m_serviceManagerWindow, &ServiceManagerWindow::addServerRequested, this, [this](const QString &name, const QString &url) {
+        if (m_serviceManagerWindow) {
+            m_serviceManagerWindow->close();
         }
-    }
-
-    if (!installServiceWithDaemon(daemonPath)) {
-        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service installer."));
-        return;
-    }
-
-    setServiceStatus(QStringLiteral("Service installer requested administrator approval..."));
-    QTimer::singleShot(3000, this, [this]() {
-        m_serviceStartAttempted = false;
-        refresh();
+        QTimer::singleShot(0, this, [this, name, url]() {
+            addServerWithDefaults(name, url);
+        });
     });
-#endif
-}
-
-void MainWindow::deleteService() {
-#ifndef Q_OS_WIN
-    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service deletion is only available on Windows."));
-    return;
-#else
-    if (QMessageBox::question(this, QStringLiteral("Delete Service"), QStringLiteral("Delete the RunBay service?")) != QMessageBox::Yes) {
-        return;
-    }
-
-    const QString command = QStringLiteral(
-        "$ErrorActionPreference='Stop'; "
-        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
-        "if (-not $existing) { exit 0; } "
-        "if ($existing.Status -ne 'Stopped') { sc.exe stop RunBay | Out-Null; Start-Sleep -Milliseconds 700; } "
-        "sc.exe delete RunBay | Out-Null;");
-    if (!runElevatedPowerShell(command)) {
-        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service deletion prompt."));
-        return;
-    }
-
-    setServiceStatus(QStringLiteral("Service deletion requested administrator approval..."));
-    QTimer::singleShot(3000, this, [this]() {
-        m_serviceStartAttempted = false;
-        refresh();
-    });
-#endif
-}
-
-void MainWindow::startService() {
-#ifndef Q_OS_WIN
-    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service control is only available on Windows."));
-    return;
-#else
-    const QString command = QStringLiteral(
-        "$ErrorActionPreference='Stop'; "
-        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
-        "if (-not $existing) { throw 'RunBay service is not installed.'; } "
-        "if ($existing.Status -ne 'Running') { sc.exe start RunBay | Out-Null; }");
-    if (!runElevatedPowerShell(command)) {
-        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service start prompt."));
-        return;
-    }
-
-    setServiceStatus(QStringLiteral("Service start requested administrator approval..."));
-    QTimer::singleShot(3000, this, [this]() {
-        m_serviceStartAttempted = false;
-        refresh();
-    });
-#endif
-}
-
-void MainWindow::stopService() {
-#ifndef Q_OS_WIN
-    QMessageBox::information(this, QStringLiteral("RunBay"), QStringLiteral("Service control is only available on Windows."));
-    return;
-#else
-    const QString command = QStringLiteral(
-        "$ErrorActionPreference='Stop'; "
-        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
-        "if (-not $existing) { throw 'RunBay service is not installed.'; } "
-        "if ($existing.Status -ne 'Stopped') { sc.exe stop RunBay | Out-Null; }");
-    if (!runElevatedPowerShell(command)) {
-        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Failed to open the service stop prompt."));
-        return;
-    }
-
-    setServiceStatus(QStringLiteral("Service stop requested administrator approval..."));
-    QTimer::singleShot(3000, this, [this]() {
-        m_serviceStartAttempted = false;
-        refresh();
-    });
-#endif
-}
-
-QString MainWindow::bundledDaemonPath() const {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        appDir + QStringLiteral("/runbayd.exe"),
-        appDir + QStringLiteral("/daemon.exe"),
-        appDir + QStringLiteral("/runbay-daemon.exe"),
-    };
-    for (const QString &candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return candidate;
-        }
-    }
-    return {};
-}
-
-bool MainWindow::installServiceWithDaemon(const QString &daemonPath) {
-#ifndef Q_OS_WIN
-    Q_UNUSED(daemonPath)
-    return false;
-#else
-    const QFileInfo daemonInfo(daemonPath);
-    if (!daemonInfo.exists() || !daemonInfo.isFile()) {
-        QMessageBox::warning(this, QStringLiteral("RunBay"), QStringLiteral("Selected daemon executable does not exist."));
-        return false;
-    }
-
-    const QString quotedDaemon = powershellSingleQuoted(daemonInfo.absoluteFilePath());
-    const QString installCommand = QStringLiteral(
-        "$ErrorActionPreference='Stop'; "
-        "$daemon=%1; "
-        "$binPath='\"' + $daemon + '\"'; "
-        "$existing=Get-Service -Name 'RunBay' -ErrorAction SilentlyContinue; "
-        "if ($existing) { sc.exe stop RunBay | Out-Null; Start-Sleep -Milliseconds 500; sc.exe delete RunBay | Out-Null; Start-Sleep -Milliseconds 500; } "
-        "sc.exe create RunBay binPath= $binPath start= auto DisplayName= 'RunBay' | Out-Null; "
-        "sc.exe description RunBay 'RunBay daemon service' | Out-Null; "
-        "sc.exe failure RunBay reset= 60 actions= restart/5000/restart/5000/none/0 | Out-Null; "
-        "sc.exe start RunBay | Out-Null;")
-                                       .arg(quotedDaemon);
-    return runElevatedPowerShell(installCommand);
-#endif
-}
-
-bool MainWindow::runElevatedPowerShell(const QString &command) {
-#ifndef Q_OS_WIN
-    Q_UNUSED(command)
-    return false;
-#else
-    const QString elevateCommand = QStringLiteral(
-        "Start-Process -FilePath 'powershell.exe' "
-        "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',%1) "
-        "-Verb RunAs")
-                                       .arg(powershellSingleQuoted(command));
-
-    return QProcess::startDetached(QStringLiteral("powershell.exe"),
-                                   {QStringLiteral("-NoProfile"),
-                                    QStringLiteral("-ExecutionPolicy"),
-                                    QStringLiteral("Bypass"),
-                                    QStringLiteral("-Command"),
-                                    elevateCommand});
-#endif
+    m_serviceManagerWindow->show();
+    m_serviceManagerWindow->raise();
+    m_serviceManagerWindow->activateWindow();
 }
 
 void MainWindow::onSelectionChanged() {
@@ -1955,7 +1783,7 @@ void MainWindow::setServiceStatus(const QString &message) {
 }
 
 void MainWindow::restoreUiState() {
-    const YAML::Node settings = loadYamlFile(settingsFilePath());
+    const YAML::Node settings = AppUtils::loadYamlFile(settingsFilePath());
 
     const YAML::Node windowNode = settings[QStringLiteral("window").toStdString()];
     const int savedWindowWidth = windowNode && windowNode[QStringLiteral("width").toStdString()]
@@ -2046,7 +1874,7 @@ void MainWindow::saveUiState() const {
             m_taskView->columnWidth(TaskTableModel::CommandColumn);
     }
 
-    saveYamlFile(settingsFilePath(), settings);
+    AppUtils::saveYamlFile(settingsFilePath(), settings);
 }
 
 quint64 MainWindow::clearedLogEntryId(const QString &taskId) const {

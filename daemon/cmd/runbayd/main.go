@@ -21,10 +21,11 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8732", "HTTP listen address")
 	dataPath := flag.String("data", defaultDataPath(), "task data file path")
+	logPath := flag.String("log-dir", logfiles.DefaultRoot(), "log directory path")
 	flag.Parse()
 
 	if isWindowsService() {
-		if err := runWindowsService("RunBay", *addr, *dataPath); err != nil {
+		if err := runWindowsService("RunBay", *addr, *dataPath, *logPath); err != nil {
 			log.Fatalf("service failed: %v", err)
 		}
 		return
@@ -38,13 +39,13 @@ func main() {
 		close(stop)
 	}()
 
-	if err := runDaemon(*addr, *dataPath, stop); err != nil {
+	if err := runDaemon(*addr, *dataPath, *logPath, stop); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func runDaemon(addr, dataPath string, stop <-chan struct{}) error {
-	logManager := logfiles.New(logfiles.DefaultRoot(), logfiles.DefaultRetentionDays)
+func runDaemon(addr, dataPath, logPath string, stop <-chan struct{}) error {
+	logManager := logfiles.New(logPath, logfiles.DefaultRetentionDays)
 	defer func() {
 		if err := logManager.Close(); err != nil {
 			log.Printf("failed to close log files: %v", err)
@@ -68,7 +69,7 @@ func runDaemon(addr, dataPath string, stop <-chan struct{}) error {
 	go func() {
 		log.Printf("runbayd listening on http://%s", addr)
 		log.Printf("task data: %s", dataPath)
-		log.Printf("log data: %s", logfiles.DefaultRoot())
+		log.Printf("log data: %s", logPath)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("listen failed: %v", err)
 			serverErr <- err
@@ -112,10 +113,10 @@ func defaultDataPath() string {
 
 	if runtime.GOOS == "windows" {
 		if dir := os.Getenv("ProgramData"); dir != "" {
-			return dir + string(os.PathSeparator) + "RunBay" + string(os.PathSeparator) + "tasks.json"
+			return dir + string(os.PathSeparator) + "RunBayd" + string(os.PathSeparator) + "tasks.json"
 		}
-		return `C:\ProgramData\RunBay\tasks.json`
+		return `C:\ProgramData\RunBayd\tasks.json`
 	}
 
-	return "/var/lib/runbay/tasks.json"
+	return "/var/lib/runbayd/tasks.json"
 }
