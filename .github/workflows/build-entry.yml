@@ -1,0 +1,16 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+jobs:
+  package-windows:
+    name: Windows
+    uses: ./.github/workflows/package-windows.yml
+
+  package-macos:
+    name: macOS
+    uses: ./.github/workflows/package-macos.yml
