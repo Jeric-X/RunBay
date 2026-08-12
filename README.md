@@ -225,7 +225,7 @@ the latest seven days retained.
 The `Package Windows` and `Package macOS` workflows run on every push and can
 also be started manually from the Actions tab. Windows builds the Release
 daemon and Qt client on `windows-latest`, then uploads
-`RunBay-windows-Release.zip`. macOS builds both binaries on `macos-14`, embeds
+`RunBay-windows-Release.zip`. macOS builds both binaries on `macos-26`, embeds
 the daemon and Qt frameworks in `RunBay.app`, creates
 `RunBay-macos-Release.dmg`, verifies it, and uploads the DMG as the
 `RunBay-macos-Release` artifact.

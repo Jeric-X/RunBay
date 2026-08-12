@@ -7,11 +7,11 @@ on:
 jobs:
   package:
     name: Package macOS
-    runs-on: macos-14
+    runs-on: macos-26
 
     env:
       CONFIGURATION: Release
-      QT_VERSION: 6.8.3
+      QT_VERSION: 6.11.1
       QT_ARCH: clang_64
       PACKAGE_DIR: dist/Release
       DMG_PATH: dist/RunBay-macos-Release.dmg

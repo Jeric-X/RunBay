@@ -197,7 +197,15 @@ fi
 /usr/bin/install -m 755 "$script_dir/manage-launchdaemon.sh" \
     "$output_dir/RunBay.app/Contents/Resources/manage-launchdaemon.sh"
 
-"$macdeployqt_bin" "$output_dir/RunBay.app" -always-overwrite -no-codesign
+macdeployqt_args=(
+    "$output_dir/RunBay.app"
+    -always-overwrite
+)
+macdeployqt_help="$("$macdeployqt_bin" -help 2>&1 || true)"
+if [[ "$macdeployqt_help" == *"-no-codesign"* ]]; then
+    macdeployqt_args+=(-no-codesign)
+fi
+"$macdeployqt_bin" "${macdeployqt_args[@]}"
 
 # Ad-hoc signing makes the nested Qt frameworks and helper binary internally consistent.
 /usr/bin/codesign --force --deep --sign - "$output_dir/RunBay.app"
