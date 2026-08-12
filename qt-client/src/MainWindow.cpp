@@ -2,6 +2,7 @@
 
 #include "AppUtils.h"
 #include "ServiceManagerWindow.h"
+#include "ServiceRuntimeConfig.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -384,9 +385,10 @@ void applyAnsiSgr(const QList<int> &params, QTextCharFormat *format) {
             if (mode == 5 && i + 1 < params.size()) {
                 color = ansi256Color(params.at(++i));
             } else if (mode == 2 && i + 3 < params.size()) {
-                color = QColor(qBound(0, params.at(++i), 255),
-                               qBound(0, params.at(++i), 255),
-                               qBound(0, params.at(++i), 255));
+                const int red = qBound(0, params.at(++i), 255);
+                const int green = qBound(0, params.at(++i), 255);
+                const int blue = qBound(0, params.at(++i), 255);
+                color = QColor(red, green, blue);
             }
             if (color.isValid()) {
                 if (foreground) {
@@ -673,7 +675,8 @@ void MainWindow::buildUi() {
     connect(addServerAction, &QAction::triggered, this, &MainWindow::addServer);
     connect(deleteServerAction, &QAction::triggered, this, &MainWindow::deleteCurrentServer);
 
-    QAction *serviceAction = menuBar()->addAction(QStringLiteral("Service"));
+    QMenu *serviceMenu = menuBar()->addMenu(QStringLiteral("Service"));
+    QAction *serviceAction = serviceMenu->addAction(QStringLiteral("Manage Services..."));
     connect(serviceAction, &QAction::triggered, this, &MainWindow::openServiceManager);
 
     QToolBar *toolbar = addToolBar(QStringLiteral("Tasks"));
@@ -1771,6 +1774,31 @@ void MainWindow::ensureDaemonServiceStarted() {
     }
 
     setServiceStatus(QStringLiteral("Disconnected; RunBay service is not running (%1)").arg(startType));
+#elif defined(Q_OS_MACOS)
+    const QString launchDaemonLabel = QStringLiteral("com.runbay.daemon.%1")
+                                          .arg(ServiceRuntimeConfig::identifier(QStringLiteral("RunBay")));
+    const QString launchDaemonPlist =
+        QStringLiteral("/Library/LaunchDaemons/%1.plist").arg(launchDaemonLabel);
+    QProcess query;
+    query.start(QStringLiteral("/bin/launchctl"),
+                {QStringLiteral("print"), QStringLiteral("system/%1").arg(launchDaemonLabel)});
+    if (!query.waitForFinished(2000)) {
+        query.kill();
+        setServiceStatus(QStringLiteral("Disconnected; LaunchDaemon check timed out"));
+        return;
+    }
+
+    if (query.exitCode() == 0) {
+        setServiceStatus(QStringLiteral("RunBay LaunchDaemon is running; waiting for daemon..."));
+        QTimer::singleShot(1000, this, &MainWindow::refresh);
+        return;
+    }
+
+    if (QFileInfo::exists(launchDaemonPlist)) {
+        setServiceStatus(QStringLiteral("Disconnected; RunBay LaunchDaemon is installed but not running"));
+    } else {
+        setServiceStatus(QStringLiteral("Disconnected; RunBay LaunchDaemon is not installed"));
+    }
 #else
     setServiceStatus(QStringLiteral("Disconnected"));
 #endif

@@ -41,8 +41,9 @@ running the daemon as a system service:
 %ProgramData%\RunBay\tasks.json
 ```
 
-On non-Windows systems the default is `/var/lib/runbay/tasks.json`. You can
-override the path when running without service permissions:
+On Linux the default is `/var/lib/runbayd/tasks.json`; on macOS it is
+`/Library/Application Support/RunBayd/tasks.json`. You can override the path
+when running without service permissions:
 
 ```powershell
 go run ./cmd/runbayd -data .\runbay-tasks.json
@@ -59,6 +60,102 @@ cmake --build build\Debug --config Debug
 
 If Qt is installed but `cmake` or Qt tools are not in `PATH`, open `qt-client`
 with Qt Creator and select your installed Qt 6 kit.
+
+## macOS app and boot service
+
+On macOS, package the Qt client as a native app bundle with the daemon embedded
+in `Contents/MacOS`:
+
+```bash
+brew install go cmake qtbase yaml-cpp
+./scripts/package-macos.sh
+open ./dist/Release/RunBay.app
+```
+
+The packaging script runs `macdeployqt`, performs an ad-hoc signature, and
+writes the self-contained app to `dist/Release/RunBay.app`. It packages the
+native architecture by default. A universal package can be requested when the
+Qt installation contains both slices:
+
+```bash
+./scripts/package-macos.sh --architectures 'arm64;x86_64' --qt-prefix /path/to/universal/Qt
+```
+
+Install the third-party `create-dmg` tool and create a styled DMG containing
+the app and an Applications shortcut with:
+
+```bash
+brew install create-dmg
+./scripts/create-macos-dmg.sh \
+  --app ./dist/Release/RunBay.app \
+  --output ./dist/RunBay-macos-Release.dmg
+```
+
+The DMG uses the 660×400 background and icon layout under `packaging/macos`.
+The GitHub Actions workflow installs `create-dmg` with Homebrew and uses the
+same script and assets as local packaging.
+
+macOS uses `launchd` as the equivalent of the Windows Service Control Manager.
+RunBay uses a system `LaunchDaemon`, rather than a per-user `LaunchAgent`, so
+the daemon starts during boot and does not require a logged-in user. Open
+`Service` -> `Manage Services...` in the desktop app to:
+
+- add a service and select a local macOS user;
+- register or unregister it through the standard administrator authorization prompt;
+- start and stop it from the UI;
+- inspect its current launchd state.
+
+Tasks spawned by the daemon run as the selected service user. The app creates
+that user's data and log directories during registration. The command-line
+installer remains available for a default root-owned service:
+
+```bash
+sudo ./dist/Release/install-launchdaemon.sh
+```
+
+The generated LaunchDaemon directly runs
+`RunBay.app/Contents/MacOS/runbayd`; it does not copy the daemon to a separate
+system directory. UI-created launchd labels use
+`com.runbay.daemon.<service-id>`. The minimal generated plist contains the app's
+daemon path, selected user, boot policy, and a pointer to `service.json`;
+listen address, data file, and log directory are stored in that
+platform-neutral JSON configuration instead of the plist.
+
+To uninstall the boot service while retaining task data and logs:
+
+```bash
+sudo ./dist/Release/uninstall-launchdaemon.sh
+```
+
+The default root service stores task data under
+`/Library/Application Support/RunBayd` and logs under `/Library/Logs/RunBayd`.
+Services running as normal users default to that user's
+`~/Library/Application Support/RunBayd` directory. Because launchd directly
+references the registered app bundle, moving or deleting `RunBay.app` requires
+unregistering and registering the service again from the app's new location.
+
+## Platform-neutral service configuration
+
+Both Windows SCM registration and macOS launchd registration start the daemon
+with `runbayd -service-config <path>`. The referenced JSON is the authoritative
+runtime configuration:
+
+```json
+{
+  "version": 1,
+  "service_id": "runbay-0123456789ab",
+  "name": "RunBay",
+  "listen_address": "127.0.0.1:8732",
+  "data_file": "/path/to/RunBayd/tasks.json",
+  "log_directory": "/path/to/RunBayd/logs",
+  "user": "service-user"
+}
+```
+
+Platform service definitions retain only values required by the operating
+system, such as the Windows service account or launchd's `UserName` and label.
+The configuration schema is strict and versioned; unknown fields and unsupported
+versions are rejected.
 
 Helper scripts:
 
@@ -90,16 +187,13 @@ compiler payload, and the MSVC runtime installer to keep the Windows package
 smaller. Pass `-IncludeCompilerRuntime` if you want
 `windeployqt --compiler-runtime`.
 
-The Windows package also includes service helper scripts. Run these from an
-elevated PowerShell:
-
-```powershell
-.\install-service.ps1
-.\uninstall-service.ps1
-```
+Register, start, stop, and remove Windows services from the Qt client's
+Service menu. The Windows package does not include separate service management
+scripts.
 
 When installed as the `RunBay` Windows service, `runbayd.exe` uses the native
-Windows Service Control Manager protocol. The Qt client checks `/api/health`
+Windows Service Control Manager protocol and reads the same `service.json`
+format used on macOS. The Qt client checks `/api/health`
 and shows service state in the status bar, including whether the service is
 installed, running, and configured for automatic startup. It does not install
 or start the service automatically; use the Service menu to install, start,
@@ -128,12 +222,13 @@ the latest seven days retained.
 
 ## GitHub Actions
 
-The `Package Windows` workflow runs on every push and can also be started
-manually from the Actions tab. It builds the Release daemon and Qt client on
-`windows-latest` with Go 1.22, MSVC x64, and Qt 6.8.3
-`win64_msvc2022_64`, then packages `dist\Release` into
-`dist\RunBay-windows-Release.zip` and uploads it as the
-`RunBay-windows-Release` artifact.
+The `Package Windows` and `Package macOS` workflows run on every push and can
+also be started manually from the Actions tab. Windows builds the Release
+daemon and Qt client on `windows-latest`, then uploads
+`RunBay-windows-Release.zip`. macOS builds both binaries on `macos-14`, embeds
+the daemon and Qt frameworks in `RunBay.app`, creates
+`RunBay-macos-Release.dmg`, verifies it, and uploads the DMG as the
+`RunBay-macos-Release` artifact.
 
 VS Code:
 

@@ -116,8 +116,6 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 if ($packageDaemon) {
     Copy-Item -LiteralPath $daemonExe -Destination (Join-Path $OutputDir "runbayd.exe") -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-service.ps1") -Destination (Join-Path $OutputDir "install-service.ps1") -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall-service.ps1") -Destination (Join-Path $OutputDir "uninstall-service.ps1") -Force
 }
 
 if ($packageClient) {

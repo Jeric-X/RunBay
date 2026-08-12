@@ -9,6 +9,8 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+CMakeUserPresets.json
+*.dSYM/
 
 # Packaged outputs
 dist/
@@ -16,6 +18,21 @@ dist/
 # Editors
 .idea/
 .vscode/*.local.json
+*.swp
+*.swo
+*~
+
+# macOS / Xcode
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+DerivedData/
+xcuserdata/
+*.xcuserstate
 
 # Runtime data
 *.log

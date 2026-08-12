@@ -38,6 +38,19 @@
             "MIMode": "gdb",
             "miDebuggerPath": "${config:runbay.gdbPath}",
             "preLaunchTask": "RunBay: Build Qt client"
+        },
+        {
+            "name": "RunBay: Debug macOS client",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/dist/Debug/RunBay.app/Contents/MacOS/RunBay",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/dist/Debug/RunBay.app/Contents/MacOS",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "preLaunchTask": "RunBay: Build all (macOS Debug)"
         }
     ],
     "compounds": [

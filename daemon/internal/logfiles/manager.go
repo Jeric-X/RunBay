@@ -42,6 +42,8 @@ func DefaultRoot() string {
 			return filepath.Join(dir, "RunBayd", "logs")
 		}
 		return `C:\ProgramData\RunBayd\logs`
+	case "darwin":
+		return "/Library/Logs/RunBayd"
 	default:
 		return filepath.Join(os.TempDir(), "runbayd", "logs")
 	}

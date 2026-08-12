@@ -85,6 +85,20 @@
             ],
             "group": "build",
             "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "RunBay: Build all (macOS Debug)",
+            "type": "shell",
+            "command": "${workspaceFolder}/scripts/package-macos.sh",
+            "args": [
+                "--configuration",
+                "Debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": "$gcc"
         }
     ]
 }

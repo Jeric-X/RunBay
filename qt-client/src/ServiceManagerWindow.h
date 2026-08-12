@@ -72,7 +72,7 @@ private:
     QString registerServiceCommand(const ServiceConfig &service, const QString &daemonPath, const QString &resultFile);
     bool beginElevatedOperation(ServiceOperationType type, const QString &serviceName, const QString &command,
                                 const QString &resultFile, const QString &promptFailureMessage);
-    bool runElevatedPowerShell(const QString &command);
+    bool runElevatedCommand(const QString &command, const QString &resultFile);
     QString serviceAddress(const ServiceConfig &service) const;
     QString serviceServerUrl(const ServiceConfig &service) const;
     QString serviceCommand(const QString &serviceName, const QString &operation, const QString &resultFile = QString()) const;

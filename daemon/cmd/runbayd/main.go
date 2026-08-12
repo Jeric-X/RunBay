@@ -15,6 +15,7 @@ import (
 	"runbay/daemon/internal/api"
 	"runbay/daemon/internal/logfiles"
 	"runbay/daemon/internal/process"
+	"runbay/daemon/internal/serviceconfig"
 	"runbay/daemon/internal/store"
 )
 
@@ -22,7 +23,18 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8732", "HTTP listen address")
 	dataPath := flag.String("data", defaultDataPath(), "task data file path")
 	logPath := flag.String("log-dir", logfiles.DefaultRoot(), "log directory path")
+	serviceConfigPath := flag.String("service-config", "", "platform-neutral daemon service configuration file")
 	flag.Parse()
+
+	if *serviceConfigPath != "" {
+		config, err := serviceconfig.Load(*serviceConfigPath)
+		if err != nil {
+			log.Fatalf("load service config: %v", err)
+		}
+		*addr = config.ListenAddress
+		*dataPath = config.DataFile
+		*logPath = config.LogDirectory
+	}
 
 	if isWindowsService() {
 		if err := runWindowsService("RunBay", *addr, *dataPath, *logPath); err != nil {
@@ -111,12 +123,15 @@ func defaultDataPath() string {
 		return value
 	}
 
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		if dir := os.Getenv("ProgramData"); dir != "" {
 			return dir + string(os.PathSeparator) + "RunBayd" + string(os.PathSeparator) + "tasks.json"
 		}
 		return `C:\ProgramData\RunBayd\tasks.json`
+	case "darwin":
+		return "/Library/Application Support/RunBayd/tasks.json"
+	default:
+		return "/var/lib/runbayd/tasks.json"
 	}
-
-	return "/var/lib/runbayd/tasks.json"
 }
